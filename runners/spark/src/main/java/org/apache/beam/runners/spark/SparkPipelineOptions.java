@@ -85,6 +85,12 @@ public interface SparkPipelineOptions extends SparkCommonPipelineOptions {
   @Experimental
   void setBundleSize(Long value);
 
+  @Description("If the spark runner will reuse the Spark Context for beam pipelines.")
+  @Default.Boolean(false)
+  boolean getReusesSparkContext();
+
+  void setReusesSparkContext(boolean value);
+
   @Description(
       "If the spark runner will be initialized with a provided Spark Context. "
           + "The Spark Context should be provided with SparkContextOptions.")

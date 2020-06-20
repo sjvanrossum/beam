@@ -38,15 +38,18 @@ public final class SparkContextFactory {
   // Spark allows only one context for JVM so this can be static.
   private static JavaSparkContext sparkContext;
   private static String sparkMaster;
+  private static boolean reusesSparkContext;
   private static boolean usesProvidedSparkContext;
 
   private SparkContextFactory() {}
 
   public static synchronized JavaSparkContext getSparkContext(SparkPipelineOptions options) {
     SparkContextOptions contextOptions = options.as(SparkContextOptions.class);
+    reusesSparkContext = contextOptions.getReusesSparkContext();
     usesProvidedSparkContext = contextOptions.getUsesProvidedSparkContext();
     // reuse should be ignored if the context is provided.
-    if (Boolean.getBoolean(TEST_REUSE_SPARK_CONTEXT) && !usesProvidedSparkContext) {
+    if ((Boolean.getBoolean(TEST_REUSE_SPARK_CONTEXT) || reusesSparkContext)
+        && !usesProvidedSparkContext) {
 
       // if the context is null or stopped for some reason, re-create it.
       if (sparkContext == null || sparkContext.sc().isStopped()) {
@@ -66,7 +69,8 @@ public final class SparkContextFactory {
   }
 
   public static synchronized void stopSparkContext(JavaSparkContext context) {
-    if (!Boolean.getBoolean(TEST_REUSE_SPARK_CONTEXT) && !usesProvidedSparkContext) {
+    if (!(Boolean.getBoolean(TEST_REUSE_SPARK_CONTEXT) || reusesSparkContext)
+        && !usesProvidedSparkContext) {
       context.stop();
     }
   }

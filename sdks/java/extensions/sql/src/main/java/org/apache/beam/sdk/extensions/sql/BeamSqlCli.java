@@ -20,9 +20,12 @@ package org.apache.beam.sdk.extensions.sql;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.extensions.sql.impl.BeamSqlEnv;
+import org.apache.beam.sdk.extensions.sql.impl.BeamSqlPipelineOptions;
 import org.apache.beam.sdk.extensions.sql.impl.ParseException;
 import org.apache.beam.sdk.extensions.sql.impl.rel.BeamEnumerableConverter;
 import org.apache.beam.sdk.extensions.sql.impl.rel.BeamSqlRelUtils;
+import org.apache.beam.sdk.extensions.sql.meta.BeamSqlTable;
+import org.apache.beam.sdk.extensions.sql.meta.Table;
 import org.apache.beam.sdk.extensions.sql.meta.store.MetaStore;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
@@ -46,6 +49,8 @@ public class BeamSqlCli {
       builder.autoLoadUserDefinedFunctions();
     }
     builder.setPipelineOptions(pipelineOptions);
+    builder.setQueryPlannerClassName(
+        pipelineOptions.as(BeamSqlPipelineOptions.class).getPlannerName());
     this.env = builder.build();
     return this;
   }
@@ -72,5 +77,16 @@ public class BeamSqlCli {
       BeamSqlRelUtils.toPCollection(pipeline, env.parseQuery(sqlString));
       pipeline.run();
     }
+  }
+  /** Executes the given sql. */
+  public void executeDml(String sqlString, String tableOutput) throws ParseException {
+    Table sqlTable = this.metaStore.getTable(tableOutput);
+    BeamSqlTable beamSqlTable = this.metaStore.buildBeamSqlTable(sqlTable);
+    PipelineOptions options =
+        BeamEnumerableConverter.createPipelineOptions(env.getPipelineOptions());
+    options.setJobName("BeamPlanCreator");
+    Pipeline pipeline = Pipeline.create(options);
+    BeamSqlRelUtils.toPCollectionDml(pipeline, env.parseQuery(sqlString), beamSqlTable);
+    pipeline.run();
   }
 }

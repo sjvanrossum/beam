@@ -24,6 +24,7 @@ import java.util.stream.Collectors;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.extensions.sql.impl.planner.NodeStats;
 import org.apache.beam.sdk.extensions.sql.impl.planner.NodeStatsMetadata;
+import org.apache.beam.sdk.extensions.sql.meta.BeamSqlTable;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
@@ -37,6 +38,10 @@ public class BeamSqlRelUtils {
 
   public static PCollection<Row> toPCollection(Pipeline pipeline, BeamRelNode node) {
     return toPCollection(pipeline, node, new HashMap());
+  }
+
+  public static PCollection<Row> toPCollectionDml(Pipeline pipeline, BeamRelNode node, BeamSqlTable outputTable) {
+    return toPCollectionDml(pipeline, node, outputTable, new HashMap());
   }
 
   /** Transforms the inputs into a PInput. */
@@ -67,6 +72,28 @@ public class BeamSqlRelUtils {
     PCollectionList<Row> input = buildPCollectionList(node.getPCollectionInputs(), pipeline, cache);
     PTransform<PCollectionList<Row>, PCollection<Row>> transform = node.buildPTransform();
     output = Pipeline.applyTransform(name, input, transform);
+
+    cache.put(node.getId(), output);
+    return output;
+  }
+
+  /**
+   * A {@link BeamRelNode} is a recursive structure, the {@code BeamQueryPlanner} visits it with a
+   * DFS(Depth-First-Search) algorithm.
+   */
+  static PCollection<Row> toPCollectionDml(
+          Pipeline pipeline, BeamRelNode node, BeamSqlTable outputTable, Map<Integer, PCollection<Row>> cache) {
+    PCollection<Row> output = cache.get(node.getId());
+    if (output != null) {
+      return output;
+    }
+
+    String name = node.getClass().getSimpleName() + "_" + node.getId();
+    PCollectionList<Row> input = buildPCollectionList(node.getPCollectionInputs(), pipeline, cache);
+    PTransform<PCollectionList<Row>, PCollection<Row>> transform = node.buildPTransform();
+    output = Pipeline.applyTransform(name, input, transform);
+
+    outputTable.buildIOWriter(output);
 
     cache.put(node.getId(), output);
     return output;

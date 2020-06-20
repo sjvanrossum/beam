@@ -60,11 +60,13 @@ import org.apache.beam.vendor.calcite.v1_20_0.org.apache.calcite.tools.RuleSet;
 @Experimental
 public class BeamSqlEnv {
   JdbcConnection connection;
-  QueryPlanner planner;
+  QueryPlanner ddlPlanner;
+  QueryPlanner sqlPlanner;
 
-  private BeamSqlEnv(JdbcConnection connection, QueryPlanner planner) {
+  private BeamSqlEnv(JdbcConnection connection, QueryPlanner ddlPlanner, QueryPlanner sqlPlanner) {
     this.connection = connection;
-    this.planner = planner;
+    this.ddlPlanner = ddlPlanner;
+    this.sqlPlanner = sqlPlanner;
   }
 
   /** Creates a builder with the default schema backed by the table provider. */
@@ -102,20 +104,29 @@ public class BeamSqlEnv {
   }
 
   public BeamRelNode parseQuery(String query) throws ParseException {
-    return planner.convertToBeamRel(query, QueryParameters.ofNone());
+    return sqlPlanner.convertToBeamRel(query, QueryParameters.ofNone());
   }
 
   public BeamRelNode parseQuery(String query, QueryParameters queryParameters)
       throws ParseException {
-    return planner.convertToBeamRel(query, queryParameters);
+    return sqlPlanner.convertToBeamRel(query, queryParameters);
   }
 
-  public boolean isDdl(String sqlStatement) throws ParseException {
-    return planner.parse(sqlStatement) instanceof SqlExecutableStatement;
+  public boolean isDdl(String sqlStatement) throws ParseException, SqlConversionException {
+    try {
+      return ddlPlanner.parse(sqlStatement) instanceof SqlExecutableStatement;
+    } catch (ParseException e) {
+      try {
+        Boolean validate = sqlPlanner.convertToBeamRel(sqlStatement, QueryParameters.ofNone()) == null;
+        return validate;
+      } catch (Exception ee) {
+        throw new ParseException("Unable to parse statement", ee);
+      }
+    }
   }
 
   public void executeDdl(String sqlStatement) throws ParseException {
-    SqlExecutableStatement ddl = (SqlExecutableStatement) planner.parse(sqlStatement);
+    SqlExecutableStatement ddl = (SqlExecutableStatement) ddlPlanner.parse(sqlStatement);
     ddl.execute(getContext());
   }
 
@@ -129,7 +140,7 @@ public class BeamSqlEnv {
 
   public String explain(String sqlString) throws ParseException {
     try {
-      return RelOptUtil.toString(planner.convertToBeamRel(sqlString, QueryParameters.ofNone()));
+      return RelOptUtil.toString(sqlPlanner.convertToBeamRel(sqlString, QueryParameters.ofNone()));
     } catch (Exception e) {
       throw new ParseException("Unable to parse statement", e);
     }
@@ -140,6 +151,7 @@ public class BeamSqlEnv {
     private static final String CALCITE_PLANNER =
         "org.apache.beam.sdk.extensions.sql.impl.CalciteQueryPlanner";
     private String queryPlannerClassName;
+    private String ddlPlannerClassName;
     private TableProvider defaultTableProvider;
     private String currentSchemaName;
     private Map<String, TableProvider> schemaMap;
@@ -154,6 +166,7 @@ public class BeamSqlEnv {
 
       defaultTableProvider = tableProvider;
       queryPlannerClassName = CALCITE_PLANNER;
+      ddlPlannerClassName = CALCITE_PLANNER;
       schemaMap = new HashMap<>();
       functionSet = new HashSet<>();
       autoLoadUdfs = false;
@@ -226,6 +239,11 @@ public class BeamSqlEnv {
       return this;
     }
 
+    public BeamSqlEnvBuilder setDdlPlannerClassName(String name) {
+      ddlPlannerClassName = name;
+      return this;
+    }
+
     public BeamSqlEnvBuilder setPipelineOptions(PipelineOptions pipelineOptions) {
       this.pipelineOptions = pipelineOptions;
       return this;
@@ -249,9 +267,11 @@ public class BeamSqlEnv {
 
       addUdfsUdafs(jdbcConnection);
 
-      QueryPlanner planner = instantiatePlanner(jdbcConnection, ruleSets);
+      QueryPlanner ddlPlanner = instantiateDdlPlanner(jdbcConnection, ruleSets);
 
-      return new BeamSqlEnv(jdbcConnection, planner);
+      QueryPlanner sqlPlanner = instantiateSqlPlanner(jdbcConnection, ruleSets);
+
+      return new BeamSqlEnv(jdbcConnection, ddlPlanner, sqlPlanner);
     }
 
     private void configureSchemas(JdbcConnection jdbcConnection) {
@@ -310,7 +330,7 @@ public class BeamSqlEnv {
       }
     }
 
-    private QueryPlanner instantiatePlanner(
+    private QueryPlanner instantiateSqlPlanner(
         JdbcConnection jdbcConnection, Collection<RuleSet> ruleSets) {
       Class<?> queryPlannerClass;
       try {
@@ -328,6 +348,30 @@ public class BeamSqlEnv {
             String.format(
                 "QueryPlanner class %s does not have an accessible static field 'FACTORY' of type QueryPlanner.Factory",
                 queryPlannerClassName),
+            exc);
+      }
+
+      return factory.createPlanner(jdbcConnection, ruleSets);
+    }
+
+    private QueryPlanner instantiateDdlPlanner(
+        JdbcConnection jdbcConnection, Collection<RuleSet> ruleSets) {
+      Class<?> queryPlannerClass;
+      try {
+        queryPlannerClass = Class.forName(ddlPlannerClassName);
+      } catch (ClassNotFoundException exc) {
+        throw new RuntimeException(
+            "Cannot find requested QueryPlanner class: " + ddlPlannerClassName, exc);
+      }
+
+      QueryPlanner.Factory factory;
+      try {
+        factory = (QueryPlanner.Factory) queryPlannerClass.getField("FACTORY").get(null);
+      } catch (NoSuchFieldException | IllegalAccessException exc) {
+        throw new RuntimeException(
+            String.format(
+                "QueryPlanner class %s does not have an accessible static field 'FACTORY' of type QueryPlanner.Factory",
+                ddlPlannerClassName),
             exc);
       }
 

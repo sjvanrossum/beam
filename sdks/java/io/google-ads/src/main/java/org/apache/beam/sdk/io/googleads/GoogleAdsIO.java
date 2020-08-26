@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.beam.sdk.io.googleads.v3;
+package org.apache.beam.sdk.io.googleads;
 
 import com.google.ads.googleads.lib.GoogleAdsClient;
 import com.google.ads.googleads.v3.enums.SummaryRowSettingEnum.SummaryRowSetting;
@@ -140,7 +140,7 @@ public class GoogleAdsIO {
 
       @Setup
       public void setup() {
-        serviceClient = client.getVersion3().createGoogleAdsServiceClient();
+        serviceClient = client.getLatestVersion().createGoogleAdsServiceClient();
       }
 
       @Teardown

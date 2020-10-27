@@ -20,6 +20,14 @@ plugins {
   id 'org.apache.beam.module'
   id 'application'
 }
+applyJavaNature(enableChecker:false,
+  automaticModuleName: 'org.apache.beam.sdk.extensions.sql.shell',
+  ignoreRawtypeErrors: true,
+  exportJavadoc: false,
+  testShadowJar: true,
+  validateShadowJar: false,
+  shadowClosure: {}
+)
 
 dependencies {
   compile project(":sdks:java:extensions:sql:jdbc")
@@ -41,6 +49,12 @@ processResources {
 }
 
 mainClassName = "org.apache.beam.sdk.extensions.sql.jdbc.BeamSqlLine"
+
+shadowJar {
+  manifest {
+    attributes "Main-Class": mainClassName
+  }
+}
 
 /**
  * Gradle console will interfere with SQL shell, so to run this command

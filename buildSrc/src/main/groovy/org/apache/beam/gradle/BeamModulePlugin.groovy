@@ -402,10 +402,10 @@ class BeamModulePlugin implements Plugin<Project> {
     def google_oauth_clients_version = "1.31.0"
     def grpc_version = "1.27.2"
     def guava_version = "25.1-jre"
-    def hadoop_version = "2.8.5"
+    def hadoop_version = "3.3.0"
     def hamcrest_version = "2.1"
     def influxdb_version = "2.19"
-    def jackson_version = "2.10.2"
+    def jackson_version = "2.11.3"
     def jaxb_api_version = "2.3.3"
     def kafka_version = "1.0.0"
     def nemo_version = "0.1"
@@ -416,7 +416,7 @@ class BeamModulePlugin implements Plugin<Project> {
     def protobuf_version = "3.11.1"
     def quickcheck_version = "0.8"
     def slf4j_version = "1.7.30"
-    def spark_version = "2.4.6"
+    def spark_version = "2.4.7"
     def spotbugs_version = "4.0.6"
     def testcontainers_kafka_version = "1.14.3"
     def testcontainers_localstack_version = "1.14.3"
@@ -437,8 +437,8 @@ class BeamModulePlugin implements Plugin<Project> {
         antlr                                       : "org.antlr:antlr4:4.7",
         antlr_runtime                               : "org.antlr:antlr4-runtime:4.7",
         args4j                                      : "args4j:args4j:2.33",
-        avro                                        : "org.apache.avro:avro:1.8.2",
-        avro_tests                                  : "org.apache.avro:avro:1.8.2:tests",
+        avro                                        : "org.apache.avro:avro:1.9.2",
+        avro_tests                                  : "org.apache.avro:avro:1.9.2:tests",
         aws_java_sdk_cloudwatch                     : "com.amazonaws:aws-java-sdk-cloudwatch:$aws_java_sdk_version",
         aws_java_sdk_core                           : "com.amazonaws:aws-java-sdk-core:$aws_java_sdk_version",
         aws_java_sdk_dynamodb                       : "com.amazonaws:aws-java-sdk-dynamodb:$aws_java_sdk_version",
@@ -1687,7 +1687,18 @@ class BeamModulePlugin implements Plugin<Project> {
 
     // TODO: Decide whether this should be inlined into the one project that relies on it
     // or be left here.
-    project.ext.applyAvroNature = { project.apply plugin: "com.commercehub.gradle.plugin.avro" }
+    project.ext.applyAvroNature = {
+      project.apply plugin: "com.commercehub.gradle.plugin.avro"
+      project.avro {
+        createSetters = true
+        createOptionalGetters = false
+        gettersReturnOptional = false
+        fieldVisibility = "PUBLIC_DEPRECATED"
+        stringType = "String"
+        enableDecimalLogicalType = true
+        dateTimeLogicalType = "JODA"
+      }
+    }
 
     project.ext.applyAntlrNature = {
       project.apply plugin: 'antlr'

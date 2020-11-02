@@ -54,6 +54,8 @@ shadowJar {
   manifest {
     attributes "Main-Class": mainClassName
   }
+  relocate 'com.google.common', 'shadow.com.google.common'
+  relocate 'com.google.protobuf', 'shadow.com.google.protobuf'
 }
 
 /**

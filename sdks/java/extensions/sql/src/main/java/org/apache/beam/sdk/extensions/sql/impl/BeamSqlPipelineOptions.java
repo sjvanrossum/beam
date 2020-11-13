@@ -20,6 +20,7 @@ package org.apache.beam.sdk.extensions.sql.impl;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.vendor.calcite.v1_20_0.org.apache.calcite.sql.parser.SqlParser;
 
 /** Options used to configure BeamSQL. */
 public interface BeamSqlPipelineOptions extends PipelineOptions {
@@ -43,4 +44,10 @@ public interface BeamSqlPipelineOptions extends PipelineOptions {
   Boolean getVerifyRowValues();
 
   void setVerifyRowValues(Boolean verifyRowValues);
+
+  @Description("Maximum length of SQL identifiers.")
+  @Default.Integer(SqlParser.DEFAULT_IDENTIFIER_MAX_LENGTH)
+  Integer getIdentifierMaxLength();
+
+  void setIdentifierMaxLength(Integer identifierMaxLength);
 }

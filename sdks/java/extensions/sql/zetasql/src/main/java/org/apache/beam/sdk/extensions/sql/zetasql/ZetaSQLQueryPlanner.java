@@ -196,7 +196,12 @@ public class ZetaSQLQueryPlanner implements QueryPlanner {
             .setUnquotedCasing(config.unquotedCasing())
             .setQuoting(config.quoting())
             .setConformance(config.conformance())
-            .setCaseSensitive(config.caseSensitive());
+            .setCaseSensitive(config.caseSensitive())
+            .setIdentifierMaxLength(
+                connection
+                    .getPipelineOptions()
+                    .as(BeamSqlPipelineOptions.class)
+                    .getIdentifierMaxLength());
     final SqlParserImplFactory parserFactory =
         config.parserFactory(SqlParserImplFactory.class, null);
     if (parserFactory != null) {

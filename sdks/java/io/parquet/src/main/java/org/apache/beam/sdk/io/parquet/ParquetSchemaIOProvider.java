@@ -21,6 +21,9 @@ import com.google.auto.service.AutoService;
 import java.io.Serializable;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.beam.sdk.annotations.Internal;
+import org.apache.beam.sdk.io.FileIO;
+import org.apache.beam.sdk.io.GenericRecordWriteConverter;
+import org.apache.beam.sdk.io.WriteFilesResult;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.io.SchemaIO;
 import org.apache.beam.sdk.schemas.io.SchemaIOProvider;
@@ -106,7 +109,20 @@ public class ParquetSchemaIOProvider implements SchemaIOProvider {
 
     @Override
     public PTransform<PCollection<Row>, POutput> buildWriter() {
-      throw new UnsupportedOperationException("Writing to a Parquet file is not supported");
+      PTransform<PCollection<Row>, PCollection<GenericRecord>> writeConverter =
+          GenericRecordWriteConverter.builder().beamSchema(dataSchema).build();
+      return new PTransform<PCollection<Row>, POutput>() {
+        @Override
+        public WriteFilesResult<Void> expand(PCollection<Row> input) {
+          return input
+              .apply("RowToGenericRecord", writeConverter)
+              .apply(
+                  "ParquetIOWrite",
+                  FileIO.<GenericRecord>write()
+                      .via(ParquetIO.sink(AvroUtils.toAvroSchema(dataSchema)))
+                      .to(location));
+        }
+      };
     }
   }
 }

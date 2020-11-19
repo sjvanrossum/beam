@@ -30,10 +30,11 @@ import org.apache.beam.sdk.schemas.Schema;
  * of time in nanoseconds.
  */
 public class Time implements Schema.LogicalType<LocalTime, Long> {
+  public static final String IDENTIFIER = "beam:logical_type:time:v1";
 
   @Override
   public String getIdentifier() {
-    return "beam:logical_type:time:v1";
+    return IDENTIFIER;
   }
 
   // unused

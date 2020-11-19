@@ -36,6 +36,7 @@ import org.apache.beam.sdk.values.Row;
  * nanoseconds.
  */
 public class DateTime implements Schema.LogicalType<LocalDateTime, Row> {
+  public static final String IDENTIFIER = "beam:logical_type:datetime:v1";
   public static final String DATE_FIELD_NAME = "Date";
   public static final String TIME_FIELD_NAME = "Time";
   public static final Schema DATETIME_SCHEMA =
@@ -43,7 +44,7 @@ public class DateTime implements Schema.LogicalType<LocalDateTime, Row> {
 
   @Override
   public String getIdentifier() {
-    return "beam:logical_type:datetime:v1";
+    return IDENTIFIER;
   }
 
   // unused

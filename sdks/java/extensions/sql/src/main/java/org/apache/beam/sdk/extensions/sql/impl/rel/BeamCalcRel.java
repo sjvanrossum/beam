@@ -442,9 +442,8 @@ public class BeamCalcRel extends AbstractBeamCalcRel {
           Expressions.convert_(
               Expressions.call(
                   expression,
-                  "getBaseValue",
-                  Expressions.constant(index),
-                  Expressions.constant(convertTo)),
+                  "getValue",
+                  Expressions.constant(index)),
               convertTo);
       return (storageType != Object.class) ? value(value, fromType) : value;
     }

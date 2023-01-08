@@ -581,6 +581,7 @@ tasks.register("pushAllDockerImages") {
   dependsOn(":sdks:java:container:pushAll")
   dependsOn(":sdks:python:container:pushAll")
   dependsOn(":sdks:go:container:pushAll")
+  dependsOn(":sdks:rust:container:pushAll")
   dependsOn(":sdks:typescript:container:pushAll")
   for (version in project.ext.get("allFlinkVersions") as Array<*>) {
     dependsOn(":runners:flink:${version}:job-server-container:dockerPush")

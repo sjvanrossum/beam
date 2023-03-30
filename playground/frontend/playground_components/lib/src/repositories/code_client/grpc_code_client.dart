@@ -16,18 +16,21 @@
  * limitations under the License.
  */
 
+import 'package:easy_localization/easy_localization.dart';
 import 'package:grpc/grpc.dart';
 
 import '../../api/iis_workaround_channel.dart';
 import '../../api/v1/api.pbgrpc.dart' as grpc;
 import '../../models/sdk.dart';
 import '../../util/pipeline_options.dart';
+import '../dataset_grpc_extension.dart';
 import '../models/check_status_response.dart';
 import '../models/output_response.dart';
 import '../models/run_code_error.dart';
 import '../models/run_code_request.dart';
 import '../models/run_code_response.dart';
 import '../models/run_code_result.dart';
+import '../models/snippet_file_grpc_extension.dart';
 import '../sdk_grpc_extension.dart';
 import 'code_client.dart';
 
@@ -35,15 +38,13 @@ const kGeneralError = 'Failed to execute code';
 
 class GrpcCodeClient implements CodeClient {
   final grpc.PlaygroundServiceClient _defaultClient;
-  final Map<String, String> _runnerUrlsById;
+  final Map<String, Uri> _runnerUrlsById;
 
   factory GrpcCodeClient({
-    required String url,
-    required Map<String, String> runnerUrlsById,
+    required Uri url,
+    required Map<String, Uri> runnerUrlsById,
   }) {
-    final channel = IisWorkaroundChannel.xhr(
-      Uri.parse(url),
-    );
+    final channel = IisWorkaroundChannel.xhr(url);
 
     return GrpcCodeClient._(
       client: grpc.PlaygroundServiceClient(channel),
@@ -53,9 +54,19 @@ class GrpcCodeClient implements CodeClient {
 
   GrpcCodeClient._({
     required grpc.PlaygroundServiceClient client,
-    required Map<String, String> runnerUrlsById,
+    required Map<String, Uri> runnerUrlsById,
   })  : _defaultClient = client,
         _runnerUrlsById = runnerUrlsById;
+
+  @override
+  Future<grpc.GetMetadataResponse> getMetadata(Sdk sdk) async {
+    final client = _createRunCodeClient(sdk);
+    return _runSafely(
+      () => client.getMetadata(
+        grpc.GetMetadataRequest(),
+      ),
+    );
+  }
 
   @override
   Future<RunCodeResponse> runCode(RunCodeRequest request) async {
@@ -71,8 +82,11 @@ class GrpcCodeClient implements CodeClient {
 
   @override
   Future<void> cancelExecution(String pipelineUuid) {
-    return _runSafely(() =>
-        _defaultClient.cancel(grpc.CancelRequest(pipelineUuid: pipelineUuid)));
+    return _runSafely(
+      () => _defaultClient.cancel(
+        grpc.CancelRequest(pipelineUuid: pipelineUuid),
+      ),
+    );
   }
 
   @override
@@ -190,6 +204,11 @@ class GrpcCodeClient implements CodeClient {
     try {
       return await invoke();
     } on GrpcError catch (error) {
+      // Internet unavailable issue also returns unknown code error, 
+      // so message was overwritten.
+      if (error.code == StatusCode.unknown) {
+        throw RunCodeError(message: 'errors.unknownError'.tr());
+      }
       throw RunCodeError(message: error.message);
     } on Exception catch (_) {
       throw const RunCodeError();
@@ -206,17 +225,17 @@ class GrpcCodeClient implements CodeClient {
       throw Exception('Runner not found for ${sdk.id}');
     }
 
-    final channel = IisWorkaroundChannel.xhr(
-      Uri.parse(apiClientURL),
-    );
+    final channel = IisWorkaroundChannel.xhr(apiClientURL);
     return grpc.PlaygroundServiceClient(channel);
   }
 
   grpc.RunCodeRequest _grpcRunCodeRequest(RunCodeRequest request) {
-    return grpc.RunCodeRequest()
-      ..code = request.code
-      ..sdk = request.sdk.grpc
-      ..pipelineOptions = pipelineOptionsToString(request.pipelineOptions);
+    return grpc.RunCodeRequest(
+      datasets: request.datasets.map((e) => e.grpc),
+      files: request.files.map((f) => f.grpc),
+      pipelineOptions: pipelineOptionsToString(request.pipelineOptions),
+      sdk: request.sdk.grpc,
+    );
   }
 
   RunCodeStatus _toClientStatus(grpc.Status status) {

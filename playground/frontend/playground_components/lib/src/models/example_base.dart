@@ -20,6 +20,7 @@ import 'package:equatable/equatable.dart';
 
 import '../enums/complexity.dart';
 import '../repositories/example_repository.dart';
+import 'dataset.dart';
 import 'example_view_options.dart';
 import 'sdk.dart';
 
@@ -49,19 +50,22 @@ extension ExampleTypeToString on ExampleType {
 /// and other large fields.
 /// These objects are fetched as lists from [ExampleRepository].
 class ExampleBase with Comparable<ExampleBase>, EquatableMixin {
+  final bool alwaysRun;
   final Complexity? complexity;
 
   /// Index of the line to focus, 1-based.
   final int contextLine;
+  final List<Dataset> datasets;
   final String description;
   final bool isMultiFile;
-  final String? link;
   final String name;
   final String path;
   final String pipelineOptions;
   final Sdk sdk;
   final List<String> tags;
   final ExampleType type;
+  final String? urlNotebook;
+  final String? urlVcs;
   final ExampleViewOptions viewOptions;
 
   const ExampleBase({
@@ -69,13 +73,16 @@ class ExampleBase with Comparable<ExampleBase>, EquatableMixin {
     required this.path,
     required this.sdk,
     required this.type,
+    this.alwaysRun = false,
     this.complexity,
     this.contextLine = 1,
+    this.datasets = const [],
     this.description = '',
     this.isMultiFile = false,
-    this.link,
     this.pipelineOptions = '',
     this.tags = const [],
+    this.urlNotebook,
+    this.urlVcs,
     this.viewOptions = ExampleViewOptions.empty,
   });
 
@@ -87,4 +94,8 @@ class ExampleBase with Comparable<ExampleBase>, EquatableMixin {
   int compareTo(ExampleBase other) {
     return name.toLowerCase().compareTo(other.name.toLowerCase());
   }
+
+  bool get usesEmulatedData => datasets.any(
+        (dataset) => dataset.type != null,
+      );
 }

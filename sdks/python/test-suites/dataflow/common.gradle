@@ -17,6 +17,7 @@
  */
 
 evaluationDependsOn(':runners:google-cloud-dataflow-java:worker')
+evaluationDependsOn(':sdks:python:test-suites:xlang')
 enablePythonPerformanceTest()
 
 String pythonVersionSuffix = project.ext.pythonVersion
@@ -362,6 +363,42 @@ def tensorRTTests = tasks.create("tensorRTtests") {
  }
 }
 
+task installTFTRequirements {
+  dependsOn 'installGcpTest'
+  doLast {
+    exec {
+      workingDir "$rootProject.projectDir/sdks/python/apache_beam/testing/benchmarks/cloudml/"
+      executable 'sh'
+      args '-c', ". ${envdir}/bin/activate && pip install -r requirements.txt"
+    }
+  }
+}
+
+// Tensorflow transform integration and benchmarking tests on Apache Beam.
+task tftTests {
+  dependsOn 'installGcpTest'
+  dependsOn ':sdks:python:sdist'
+  dependsOn "installTFTRequirements"
+
+  doLast {
+    def opts = project.findProperty('opts')
+    opts += " --sdk_location=${files(configurations.distTarBall.files).singleFile}"
+    def testOpts = basicPytestOpts + ["--numprocesses=8", "--dist=loadfile"]
+    def argMap = [
+        "test_opts": testOpts,
+        "suite": "TFTransformTests-df${pythonVersionSuffix}",
+        "collect": "uses_tft",
+        "requirements_file": "apache_beam/testing/benchmarks/cloudml/requirements.txt",
+        "pipeline_opts": opts,
+    ]
+    def cmdArgs = mapToArgString(argMap)
+    exec {
+      executable 'sh'
+      args '-c', ". ${envdir}/bin/activate && ${runScriptsDir}/run_integration_test.sh $cmdArgs "
+    }
+  }
+}
+
 // add all RunInference E2E tests that run on DataflowRunner
 // As of now, this test suite is enable in py38 suite as the base NVIDIA image used for Tensor RT
 // contains Python 3.8.
@@ -370,4 +407,27 @@ project.tasks.register("inferencePostCommitIT") {
   dependsOn = [
   'tensorRTtests',
   ]
+}
+
+
+// Create cross-language tasks for running tests against Java expansion service(s)
+def dataflowProject = project.findProperty('dataflowProject') ?: 'apache-beam-testing'
+def dataflowRegion = project.findProperty('dataflowRegion') ?: 'us-central1'
+
+project(":sdks:python:test-suites:xlang").ext.xlangTasks.each { taskMetadata ->
+    createCrossLanguageUsingJavaExpansionTask(
+      name: taskMetadata.name,
+      expansionProjectPath: taskMetadata.expansionProjectPath,
+      collectMarker: taskMetadata.collectMarker,
+      startJobServer: taskMetadata.startJobServer,
+      cleanupJobServer: taskMetadata.cleanupJobServer,
+      needsSdkLocation: true,
+      pythonPipelineOptions: [
+        "--runner=TestDataflowRunner",
+        "--project=${dataflowProject}",
+        "--region=${dataflowRegion}",
+        "--sdk_harness_container_image_overrides=.*java.*,gcr.io/apache-beam-testing/beam-sdk/beam_java8_sdk:latest",
+      ],
+      pytestOptions: basicPytestOpts
+    )
 }

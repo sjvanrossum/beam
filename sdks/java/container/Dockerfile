@@ -16,26 +16,26 @@
 # limitations under the License.
 ###############################################################################
 ARG java_version
-FROM openjdk:${java_version}-bullseye
+FROM eclipse-temurin:${java_version}
 MAINTAINER "Apache Beam <dev@beam.apache.org>"
+ARG TARGETOS
+ARG TARGETARCH
 
 ARG pull_licenses
 
 ADD target/slf4j-api.jar /opt/apache/beam/jars/
 ADD target/slf4j-jdk14.jar /opt/apache/beam/jars/
+ADD target/jcl-over-slf4j.jar /opt/apache/beam/jars/
+ADD target/log4j-over-slf4j.jar /opt/apache/beam/jars/
+ADD target/log4j-to-slf4j.jar /opt/apache/beam/jars/
 ADD target/beam-sdks-java-harness.jar /opt/apache/beam/jars/
-
-# Required to run cross-language pipelines with KafkaIO
-# TODO May be removed once custom environments are supported
-ADD target/beam-sdks-java-io-kafka.jar /opt/apache/beam/jars/
-ADD target/kafka-clients.jar /opt/apache/beam/jars/
 
 # Required to use jamm as a javaagent to get accurate object size measuring
 # COPY fails if file is not found, so use a wildcard for open-module-agent.jar
 # since it is only included in Java 9+ containers
 COPY target/jamm.jar target/open-module-agent*.jar /opt/apache/beam/jars/
 
-ADD target/linux_amd64/boot /opt/apache/beam/
+COPY target/${TARGETOS}_${TARGETARCH}/boot /opt/apache/beam/
 
 COPY target/LICENSE /opt/apache/beam/
 COPY target/NOTICE /opt/apache/beam/

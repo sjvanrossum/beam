@@ -125,15 +125,22 @@ public interface SamzaPipelineOptions extends PipelineOptions {
 
   @Description("The maximum number of elements in a bundle.")
   @Default.Long(1)
-  long getMaxBundleSize();
+  Long getMaxBundleSize();
 
-  void setMaxBundleSize(long maxBundleSize);
+  void setMaxBundleSize(Long maxBundleSize);
 
   @Description("The maximum time to wait before finalising a bundle (in milliseconds).")
   @Default.Long(1000)
-  long getMaxBundleTimeMs();
+  Long getMaxBundleTimeMs();
 
-  void setMaxBundleTimeMs(long maxBundleTimeMs);
+  void setMaxBundleTimeMs(Long maxBundleTimeMs);
+
+  @Description(
+      "Wait if necessary for completing a remote bundle processing for at most the given time (in milliseconds). if the value of timeout is negative, wait forever until the bundle processing is completed. Used only in portable mode for now.")
+  @Default.Long(-1)
+  long getBundleProcessingTimeout();
+
+  void setBundleProcessingTimeout(long timeoutMs);
 
   @Description(
       "The number of threads to run DoFn.processElements in parallel within a bundle. Used only in non-portable mode.")

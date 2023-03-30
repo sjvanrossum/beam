@@ -61,9 +61,15 @@ class StorageApiDynamicDestinationsBeamRow<T, DestinationT extends @NonNull Obje
     }
 
     @Override
-    public StorageApiWritePayload toMessage(T element) {
+    @SuppressWarnings("nullness")
+    public StorageApiWritePayload toMessage(T element) throws Exception {
       Message msg = BeamRowToStorageApiProto.messageFromBeamRow(descriptor, toRow.apply(element));
-      return new AutoValue_StorageApiWritePayload(msg.toByteArray());
+      return StorageApiWritePayload.of(msg.toByteArray(), null);
+    }
+
+    @Override
+    public StorageApiWritePayload toMessage(TableRow tableRow, boolean respectRequired) {
+      throw new RuntimeException("Not supported");
     }
 
     @Override

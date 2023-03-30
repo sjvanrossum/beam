@@ -191,6 +191,20 @@ class CombineTest(unittest.TestCase):
                      | combine.Top.Of(3, key=len, reverse=True),
                      [['c', 'aa', 'bbb']])
 
+    self.assertEqual(['xc', 'zb', 'yd', 'wa']
+                     | combine.Top.Largest(3, key=lambda x: x[-1]),
+                     [['yd', 'xc', 'zb']])
+    self.assertEqual(['xc', 'zb', 'yd', 'wa']
+                     | combine.Top.Smallest(3, key=lambda x: x[-1]),
+                     [['wa', 'zb', 'xc']])
+
+    self.assertEqual([('a', x) for x in [1, 2, 3, 4, 1, 1]]
+                     | combine.Top.LargestPerKey(3, key=lambda x: -x),
+                     [('a', [1, 1, 1])])
+    self.assertEqual([('a', x) for x in [1, 2, 3, 4, 1, 1]]
+                     | combine.Top.SmallestPerKey(3, key=lambda x: -x),
+                     [('a', [4, 3, 2])])
+
   def test_sharded_top_combine_fn(self):
     def test_combine_fn(combine_fn, shards, expected):
       accumulators = [
@@ -871,6 +885,24 @@ class LatestCombineFnTest(unittest.TestCase):
       with TestPipeline() as p:
         pc = p | Create(l_3_tuple)
         _ = pc | beam.CombineGlobally(self.fn)
+
+
+@pytest.mark.it_validatesrunner
+class CombineValuesTest(unittest.TestCase):
+  def test_gbk_immediately_followed_by_combine(self):
+    def merge(vals):
+      return "".join(vals)
+
+    with TestPipeline() as p:
+      result = (
+          p \
+          | Create([("key1", "foo"), ("key2", "bar"), ("key1", "foo")],
+                    reshuffle=False) \
+          | beam.GroupByKey() \
+          | beam.CombineValues(merge) \
+          | beam.MapTuple(lambda k, v: '{}: {}'.format(k, v)))
+
+      assert_that(result, equal_to(['key1: foofoo', 'key2: bar']))
 
 
 #

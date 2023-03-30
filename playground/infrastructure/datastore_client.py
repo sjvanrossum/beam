@@ -44,17 +44,13 @@ class DatastoreClient:
 
     _datastore_client: datastore.Client
 
-    def __init__(self):
+    def __init__(self, project:str, namespace: str):
         self._check_envs()
         self._datastore_client = datastore.Client(
-            namespace=DatastoreProps.NAMESPACE, project=Config.GOOGLE_CLOUD_PROJECT
+            namespace=namespace, project=project
         )
 
     def _check_envs(self):
-        if Config.GOOGLE_CLOUD_PROJECT is None:
-            raise KeyError(
-                "GOOGLE_CLOUD_PROJECT environment variable should be specified in os"
-            )
         if Config.SDK_CONFIG is None:
             raise KeyError("SDK_CONFIG environment variable should be specified in os")
 
@@ -96,9 +92,12 @@ class DatastoreClient:
                     example, example_id, sdk_key, now, actual_schema_version_key, origin,
                 )
                 self._datastore_client.put(snippet)
-                self._datastore_client.put_multi(
-                    self._pc_object_entities(example, example_id)
-                )
+
+                if not example.tag.always_run:
+                    self._datastore_client.put_multi(
+                        self._pc_object_entities(example, example_id)
+                    )
+
                 self._datastore_client.put(self._to_main_file_entity(example, example_id))
                 if example.tag.files:
                     self._datastore_client.put_multi(
@@ -298,6 +297,7 @@ class DatastoreClient:
                 "cats": example.tag.categories,
                 "path": example.url_vcs,  # keep for backward-compatibity, to be removed
                 "type": api_pb2.PrecompiledObjectType.Name(example.type),
+                "alwaysRun": example.tag.always_run,
                 "origin": origin,
                 "schVer": schema_key,
                 "urlVCS": example.url_vcs,
@@ -310,28 +310,25 @@ class DatastoreClient:
         self, example: Example, example_id: str
     ) -> List[datastore.Entity]:
         entities = []
-        if len(example.graph) != 0:
-            entities.append(
-                self._pc_obj_entity(
-                    example_id,
-                    example.graph,
-                    PrecompiledExample.GRAPH_EXTENSION.upper(),
-                )
+        entities.append(
+            self._pc_obj_entity(
+                example_id,
+                example.graph,
+                PrecompiledExample.GRAPH_EXTENSION.upper(),
             )
-        if len(example.output) != 0:
-            entities.append(
-                self._pc_obj_entity(
-                    example_id,
-                    example.output,
-                    PrecompiledExample.OUTPUT_EXTENSION.upper(),
-                )
+        )
+        entities.append(
+            self._pc_obj_entity(
+                example_id,
+                example.output,
+                PrecompiledExample.OUTPUT_EXTENSION.upper(),
             )
-        if len(example.logs) != 0:
-            entities.append(
-                self._pc_obj_entity(
-                    example_id, example.logs, PrecompiledExample.LOG_EXTENSION.upper()
-                )
+        )
+        entities.append(
+            self._pc_obj_entity(
+                example_id, example.logs, PrecompiledExample.LOG_EXTENSION.upper()
             )
+        )
         return entities
 
     def _pc_obj_entity(

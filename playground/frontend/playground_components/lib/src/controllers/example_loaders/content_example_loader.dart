@@ -42,10 +42,12 @@ class ContentExampleLoader extends ExampleLoader {
   @override
   Future<Example> get future async => Example(
         complexity: descriptor.complexity,
+        files: descriptor.files,
         name: descriptor.name ?? 'Untitled Example',
         path: '',
+        pipelineOptions: descriptor.pipelineOptions,
         sdk: descriptor.sdk,
-        source: descriptor.content,
         type: ExampleType.example,
+        viewOptions: descriptor.viewOptions,
       );
 }

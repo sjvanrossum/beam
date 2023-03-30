@@ -842,11 +842,15 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
       throw new RuntimeException("Should not specify the debuggee");
     }
 
+    LOG.warn(
+        "The cloud debugger service is deprecated and will be turned down. Please remove "
+            + "`enableCloudDebugger` pipeline option as it will be removed in a future version.");
+
     CloudDebugger debuggerClient = DataflowTransport.newClouddebuggerClient(options).build();
     Debuggee debuggee = registerDebuggee(debuggerClient, uniquifier);
     options.setDebuggee(debuggee);
 
-    System.out.println(debuggerMessage(options.getProject(), debuggee.getUniquifier()));
+    LOG.info(debuggerMessage(options.getProject(), debuggee.getUniquifier()));
   }
 
   private Debuggee registerDebuggee(CloudDebugger debuggerClient, String uniquifier) {
@@ -1465,7 +1469,7 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
     return dataflowPipelineJob;
   }
 
-  private static String getContainerImageFromEnvironmentId(
+  private static EnvironmentInfo getEnvironmentInfoFromEnvironmentId(
       String environmentId, RunnerApi.Pipeline pipelineProto) {
     RunnerApi.Environment environment =
         pipelineProto.getComponents().getEnvironmentsMap().get(environmentId);
@@ -1481,18 +1485,23 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
     } catch (InvalidProtocolBufferException e) {
       throw new RuntimeException("Error parsing docker payload.", e);
     }
-    return dockerPayload.getContainerImage();
+    return EnvironmentInfo.create(
+        environmentId, dockerPayload.getContainerImage(), environment.getCapabilitiesList());
   }
 
   @AutoValue
   abstract static class EnvironmentInfo {
-    static EnvironmentInfo create(String environmentId, String containerUrl) {
-      return new AutoValue_DataflowRunner_EnvironmentInfo(environmentId, containerUrl);
+    static EnvironmentInfo create(
+        String environmentId, String containerUrl, List<String> capabilities) {
+      return new AutoValue_DataflowRunner_EnvironmentInfo(
+          environmentId, containerUrl, capabilities);
     }
 
     abstract String environmentId();
 
     abstract String containerUrl();
+
+    abstract List<String> capabilities();
   }
 
   private static List<EnvironmentInfo> getAllEnvironmentInfo(RunnerApi.Pipeline pipelineProto) {
@@ -1500,11 +1509,7 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
         .map(transform -> transform.getEnvironmentId())
         .filter(environmentId -> !environmentId.isEmpty())
         .distinct()
-        .map(
-            environmentId ->
-                EnvironmentInfo.create(
-                    environmentId,
-                    getContainerImageFromEnvironmentId(environmentId, pipelineProto)))
+        .map(environmentId -> getEnvironmentInfoFromEnvironmentId(environmentId, pipelineProto))
         .collect(Collectors.toList());
   }
 
@@ -1520,6 +1525,7 @@ public class DataflowRunner extends PipelineRunner<DataflowPipelineJob> {
                   if (environmentInfo.containerUrl().toLowerCase().contains("python")) {
                     image.setUseSingleCorePerContainer(true);
                   }
+                  image.setCapabilities(environmentInfo.capabilities());
                   return image;
                 })
             .collect(Collectors.toList());

@@ -44,6 +44,7 @@ from api.v1.api_pb2 import (
 )
 from config import Config, TagFields, PrecompiledExampleType
 from grpc_client import GRPCClient
+from constants import BEAM_ROOT_DIR_ENV_VAR_KEY
 
 from models import Example, Tag, SdkEnum, Dataset
 
@@ -155,7 +156,7 @@ async def get_statuses(
     await tqdm.gather(*tasks)
 
 
-def get_tag(filepath) -> Optional[Tag]:
+def get_tag(filepath: PurePath) -> Optional[Tag]:
     """
     Parse file by filepath and find beam tag
 
@@ -188,13 +189,19 @@ def get_tag(filepath) -> Optional[Tag]:
         line[len(tag_prefix) :] for line in lines[line_start:line_finish]
     )
     yml = yaml.load(embdedded_yaml_content, Loader=yaml.SafeLoader)
-    return Tag(
-        filepath=filepath,
-        line_start=line_start,
-        line_finish=line_finish,
-        **yml[Config.BEAM_PLAYGROUND],
-    )
 
+    try:
+        return Tag(
+            filepath=str(filepath),
+            line_start=line_start,
+            line_finish=line_finish,
+            **yml[Config.BEAM_PLAYGROUND],
+            )
+    except pydantic.ValidationError as err:
+        if len(err.errors()) == 1 and err.errors()[0]["msg"] == "multifile is True but no files defined":
+            logging.warning("incomplete multifile example ignored %s", filepath)
+            return None
+        raise
 
 def _load_example(filename, filepath, sdk: SdkEnum) -> Optional[Example]:
     """
@@ -255,7 +262,7 @@ def _get_url_vcs(filepath: str) -> str:
     """
     Construct VCS URL from example's filepath
     """
-    root_dir = os.getenv("BEAM_ROOT_DIR", "../..")
+    root_dir = os.getenv(BEAM_ROOT_DIR_ENV_VAR_KEY, "../..")
     rel_path = os.path.relpath(filepath, root_dir)
     url_vcs = "{}/{}".format(Config.URL_VCS_PREFIX, urllib.parse.quote(rel_path))
     return url_vcs

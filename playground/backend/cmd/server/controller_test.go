@@ -5,7 +5,7 @@
 // (the "License"); you may not use this file except in compliance with
 // the License.  You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -55,7 +55,7 @@ import (
 
 const (
 	bufSize               = 1024 * 1024
-	javaConfig            = "{\n  \"compile_cmd\": \"javac\",\n  \"run_cmd\": \"java\",\n  \"test_cmd\": \"java\",\n  \"compile_args\": [\n    \"-d\",\n    \"bin\",\n    \"-classpath\"\n  ],\n  \"run_args\": [\n    \"-cp\",\n    \"bin:\"\n  ],\n  \"test_args\": [\n    \"-cp\",\n    \"bin:\",\n    \"JUnit\"\n  ]\n}"
+	javaConfig            = "{\n  \"compile_cmd\": \"javac\",\n  \"run_cmd\": \"java\",\n  \"test_cmd\": \"java\",\n  \"compile_args\": [\n    \"-d\",\n    \"bin\",\n    \"-parameters\",\n    \"-classpath\"\n  ],\n  \"run_args\": [\n    \"-cp\",\n    \"bin:\"\n  ],\n  \"test_args\": [\n    \"-cp\",\n    \"bin:\",\n    \"JUnit\"\n  ]\n}"
 	javaLogConfigFilename = "logging.properties"
 	baseFileFolder        = "executable_files"
 	configFolder          = "configs"
@@ -64,18 +64,16 @@ const (
 var lis *bufconn.Listener
 var cacheService cache.Cache
 var dbClient db.Database
-var opt goleak.Option
+
+// var opt goleak.Option
 var ctx context.Context
 
 func TestMain(m *testing.M) {
-	server := setup()
-	opt = goleak.IgnoreCurrent()
 	exitValue := m.Run()
-	teardown(server)
 	os.Exit(exitValue)
 }
 
-func setup() *grpc.Server {
+func setupServer(sdk pb.Sdk) *grpc.Server {
 	ctx = context.Background()
 	lis = bufconn.Listen(bufSize)
 	s := grpc.NewServer()
@@ -119,7 +117,7 @@ func setup() *grpc.Server {
 	if err != nil {
 		panic(err)
 	}
-	if err = os.Setenv("BEAM_SDK", pb.Sdk_SDK_JAVA.String()); err != nil {
+	if err = os.Setenv("BEAM_SDK", sdk.String()); err != nil {
 		panic(err)
 	}
 	if err = os.Setenv("APP_WORK_DIR", path); err != nil {
@@ -209,7 +207,6 @@ func bufDialer(context.Context, string) (net.Conn, error) {
 }
 
 func TestPlaygroundController_RunCode(t *testing.T) {
-	defer goleak.VerifyNone(t, opt)
 	type args struct {
 		ctx     context.Context
 		request *pb.RunCodeRequest
@@ -263,6 +260,11 @@ func TestPlaygroundController_RunCode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			server := setupServer(tt.args.request.Sdk)
+			opt := goleak.IgnoreCurrent()
+			defer goleak.VerifyNone(t, opt)
+			defer teardown(server)
+
 			client, closeFunc := getPlaygroundServiceClient(tt.args.ctx, t)
 			defer closeFunc()
 			response, err := client.RunCode(tt.args.ctx, tt.args.request)
@@ -289,7 +291,11 @@ func TestPlaygroundController_RunCode(t *testing.T) {
 }
 
 func TestPlaygroundController_CheckStatus(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	pipelineId := uuid.New()
 	wantStatus := pb.Status_STATUS_FINISHED
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
@@ -363,7 +369,11 @@ func TestPlaygroundController_CheckStatus(t *testing.T) {
 }
 
 func TestPlaygroundController_GetCompileOutput(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	pipelineId := uuid.New()
 	compileOutput := "MOCK_COMPILE_OUTPUT"
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
@@ -437,7 +447,11 @@ func TestPlaygroundController_GetCompileOutput(t *testing.T) {
 }
 
 func TestPlaygroundController_GetRunOutput(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	pipelineId := uuid.New()
 	runOutput := "MOCK_RUN_OUTPUT"
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
@@ -541,7 +555,11 @@ func TestPlaygroundController_GetRunOutput(t *testing.T) {
 }
 
 func TestPlaygroundController_GetLogs(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	pipelineId := uuid.New()
 	logs := "MOCK_LOGS"
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
@@ -645,7 +663,11 @@ func TestPlaygroundController_GetLogs(t *testing.T) {
 }
 
 func TestPlaygroundController_GetRunError(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	pipelineId := uuid.New()
 	runError := "MOCK_RUN_ERROR"
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
@@ -733,7 +755,11 @@ func TestPlaygroundController_GetRunError(t *testing.T) {
 }
 
 func TestPlaygroundController_Cancel(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	pipelineId := uuid.New()
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
@@ -795,7 +821,11 @@ func TestPlaygroundController_Cancel(t *testing.T) {
 }
 
 func TestPlaygroundController_SaveSnippet(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -906,7 +936,11 @@ func TestPlaygroundController_SaveSnippet(t *testing.T) {
 }
 
 func TestPlaygroundController_GetSnippet(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 	nowDate := time.Now()
@@ -996,7 +1030,11 @@ func makeSaveSnippetRequest() *pb.SaveSnippetRequest {
 }
 
 func TestPlaygroundController_SaveSnippetPersistent(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 	snip := makeSaveSnippetRequest()
@@ -1049,7 +1087,11 @@ func TestPlaygroundController_SaveSnippetPersistent(t *testing.T) {
 }
 
 func TestPlaygroundController_GetPrecompiledObjects(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -1103,7 +1145,11 @@ func TestPlaygroundController_GetPrecompiledObjects(t *testing.T) {
 }
 
 func TestPlaygroundController_GetPrecompiledObject(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -1121,14 +1167,14 @@ func TestPlaygroundController_GetPrecompiledObject(t *testing.T) {
 			name: "Getting an example in the usual case",
 			args: args{
 				ctx:  ctx,
-				info: &pb.GetPrecompiledObjectRequest{CloudPath: "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_DEFAULT_EXAMPLE"},
+				info: &pb.GetPrecompiledObjectRequest{CloudPath: "SDK_JAVA_MOCK_DEFAULT_EXAMPLE"},
 			},
 			wantErr: false,
 			check: func(response *pb.GetPrecompiledObjectResponse) {
 				expected := &pb.PrecompiledObject{
 					Sdk:             pb.Sdk_SDK_JAVA,
 					Multifile:       false,
-					CloudPath:       "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_DEFAULT_EXAMPLE",
+					CloudPath:       "SDK_JAVA_MOCK_DEFAULT_EXAMPLE",
 					Name:            "MOCK_DEFAULT_EXAMPLE",
 					Type:            pb.PrecompiledObjectType_PRECOMPILED_OBJECT_TYPE_EXAMPLE,
 					ContextLine:     10,
@@ -1148,14 +1194,14 @@ func TestPlaygroundController_GetPrecompiledObject(t *testing.T) {
 			name: "Getting an example with a dataset",
 			args: args{
 				ctx:  ctx,
-				info: &pb.GetPrecompiledObjectRequest{CloudPath: "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_NAME_DATASET"},
+				info: &pb.GetPrecompiledObjectRequest{CloudPath: "SDK_JAVA_MOCK_NAME_DATASET"},
 			},
 			wantErr: false,
 			check: func(response *pb.GetPrecompiledObjectResponse) {
 				expected := &pb.PrecompiledObject{
 					Sdk:             pb.Sdk_SDK_JAVA,
 					Multifile:       false,
-					CloudPath:       "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_NAME_DATASET",
+					CloudPath:       "SDK_JAVA_MOCK_NAME_DATASET",
 					Name:            "MOCK_NAME_DATASET",
 					Type:            pb.PrecompiledObjectType_PRECOMPILED_OBJECT_TYPE_EXAMPLE,
 					ContextLine:     10,
@@ -1192,7 +1238,11 @@ func TestPlaygroundController_GetPrecompiledObject(t *testing.T) {
 }
 
 func TestPlaygroundController_GetPrecompiledObjectCode(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -1210,7 +1260,7 @@ func TestPlaygroundController_GetPrecompiledObjectCode(t *testing.T) {
 			name: "Getting the code of single-file example",
 			args: args{
 				ctx:  ctx,
-				info: &pb.GetPrecompiledObjectCodeRequest{CloudPath: "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_DEFAULT_EXAMPLE"},
+				info: &pb.GetPrecompiledObjectCodeRequest{CloudPath: "SDK_JAVA_MOCK_DEFAULT_EXAMPLE"},
 			},
 			wantErr: false,
 			wantResponse: &pb.GetPrecompiledObjectCodeResponse{
@@ -1224,7 +1274,7 @@ func TestPlaygroundController_GetPrecompiledObjectCode(t *testing.T) {
 			name: "Getting the code of multifile example",
 			args: args{
 				ctx:  ctx,
-				info: &pb.GetPrecompiledObjectCodeRequest{CloudPath: "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_MULTIFILE"},
+				info: &pb.GetPrecompiledObjectCodeRequest{CloudPath: "SDK_JAVA_MOCK_MULTIFILE"},
 			},
 			wantErr: false,
 			wantResponse: &pb.GetPrecompiledObjectCodeResponse{
@@ -1251,7 +1301,11 @@ func TestPlaygroundController_GetPrecompiledObjectCode(t *testing.T) {
 }
 
 func TestPlaygroundController_GetPrecompiledObjectOutput(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -1269,7 +1323,7 @@ func TestPlaygroundController_GetPrecompiledObjectOutput(t *testing.T) {
 			name: "Getting the output of the compiled and run example in the usual case",
 			args: args{
 				ctx:  ctx,
-				info: &pb.GetPrecompiledObjectOutputRequest{CloudPath: "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_DEFAULT_EXAMPLE"},
+				info: &pb.GetPrecompiledObjectOutputRequest{CloudPath: "SDK_JAVA_MOCK_DEFAULT_EXAMPLE"},
 			},
 			wantErr:      false,
 			wantResponse: "MOCK_CONTENT_" + constants.PCOutputType,
@@ -1291,7 +1345,11 @@ func TestPlaygroundController_GetPrecompiledObjectOutput(t *testing.T) {
 }
 
 func TestPlaygroundController_GetPrecompiledObjectLogs(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -1309,7 +1367,7 @@ func TestPlaygroundController_GetPrecompiledObjectLogs(t *testing.T) {
 			name: "Getting the logs of the compiled and run example in the usual case",
 			args: args{
 				ctx:  ctx,
-				info: &pb.GetPrecompiledObjectLogsRequest{CloudPath: "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_DEFAULT_EXAMPLE"},
+				info: &pb.GetPrecompiledObjectLogsRequest{CloudPath: "SDK_JAVA_MOCK_DEFAULT_EXAMPLE"},
 			},
 			wantErr:      false,
 			wantResponse: "MOCK_CONTENT_" + constants.PCLogType,
@@ -1331,7 +1389,11 @@ func TestPlaygroundController_GetPrecompiledObjectLogs(t *testing.T) {
 }
 
 func TestPlaygroundController_GetPrecompiledObjectGraph(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -1349,7 +1411,7 @@ func TestPlaygroundController_GetPrecompiledObjectGraph(t *testing.T) {
 			name: "Getting the logs of the compiled and run example in the usual case",
 			args: args{
 				ctx:  ctx,
-				info: &pb.GetPrecompiledObjectGraphRequest{CloudPath: "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_DEFAULT_EXAMPLE"},
+				info: &pb.GetPrecompiledObjectGraphRequest{CloudPath: "SDK_JAVA_MOCK_DEFAULT_EXAMPLE"},
 			},
 			wantErr:      false,
 			wantResponse: "MOCK_CONTENT_" + constants.PCGraphType,
@@ -1371,7 +1433,11 @@ func TestPlaygroundController_GetPrecompiledObjectGraph(t *testing.T) {
 }
 
 func TestPlaygroundController_GetDefaultPrecompiledObject(t *testing.T) {
+	server := setupServer(pb.Sdk_SDK_UNSPECIFIED)
+	opt := goleak.IgnoreCurrent()
 	defer goleak.VerifyNone(t, opt)
+	defer teardown(server)
+
 	client, closeFunc := getPlaygroundServiceClient(ctx, t)
 	defer closeFunc()
 
@@ -1402,7 +1468,7 @@ func TestPlaygroundController_GetDefaultPrecompiledObject(t *testing.T) {
 				return
 			}
 			if got.PrecompiledObject.Multifile != false ||
-				got.PrecompiledObject.CloudPath != "SDK_JAVA/PRECOMPILED_OBJECT_TYPE_EXAMPLE/MOCK_DEFAULT_EXAMPLE" ||
+				got.PrecompiledObject.CloudPath != "SDK_JAVA_MOCK_DEFAULT_EXAMPLE" ||
 				got.PrecompiledObject.Name != "MOCK_DEFAULT_EXAMPLE" ||
 				got.PrecompiledObject.Type != pb.PrecompiledObjectType_PRECOMPILED_OBJECT_TYPE_EXAMPLE ||
 				got.PrecompiledObject.ContextLine != 10 ||

@@ -249,7 +249,7 @@ impl<'a> Pipeline {
         Out: Clone + Send,
         F: PTransform<In, Out> + Send,
     {
-        let (transform_id, transform_proto) = self.pre_apply_transform(&transform, &input);
+        let (transform_id, transform_proto) = self.pre_apply_transform(&transform, input);
 
         let mut transform_stack = self.transform_stack.lock().unwrap();
 

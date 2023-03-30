@@ -190,7 +190,7 @@ where
     In: Clone + Send,
     Out: Clone + Send,
 {
-    fn expand(&self, input: &PValue<In>) -> PValue<Out>
+    fn expand(&self, _input: &PValue<In>) -> PValue<Out>
     where
         Self: Sized,
     {
@@ -200,8 +200,8 @@ where
     fn expand_internal(
         &self,
         input: &PValue<In>,
-        pipeline: Arc<Pipeline>,
-        transform_proto: proto_pipeline::PTransform,
+        _pipeline: Arc<Pipeline>,
+        _transform_proto: proto_pipeline::PTransform,
     ) -> PValue<Out>
     where
         Self: Sized,

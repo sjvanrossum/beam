@@ -278,7 +278,7 @@ impl OperatorI for CreateOperator {
         }
     }
 
-    fn process(&self, value: WindowedValue) {
+    fn process(&self, _value: WindowedValue) {
         ()
     }
 

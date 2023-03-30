@@ -19,9 +19,9 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use crate::coders::coders::{CoderI, CoderTypeDiscriminants};
 use crate::coders::standard_coders::*;
 use crate::coders::urns::*;
+use crate::coders::{CoderI, CoderTypeDiscriminants};
 
 #[derive(Eq, PartialEq)]
 pub struct GeneralObjectCoder<T> {
@@ -51,7 +51,7 @@ impl CoderI<String> for GeneralObjectCoder<String> {
         &self,
         element: String,
         writer: &mut dyn std::io::Write,
-        context: &crate::coders::coders::Context,
+        context: &crate::coders::Context,
     ) -> Result<usize, std::io::Error> {
         let marker = "S".as_bytes();
         writer.write_all(marker).unwrap();
@@ -62,7 +62,7 @@ impl CoderI<String> for GeneralObjectCoder<String> {
     fn decode(
         &self,
         reader: &mut dyn std::io::Read,
-        context: &crate::coders::coders::Context,
+        context: &crate::coders::Context,
     ) -> Result<String, std::io::Error> {
         let marker: &mut [u8; 1] = &mut [0; 1];
         reader.read_exact(marker)?;
@@ -82,7 +82,7 @@ impl<T> Default for GeneralObjectCoder<T> {
 }
 
 impl<T> fmt::Debug for GeneralObjectCoder<T> {
-    fn fmt<'a>(&'a self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("GeneralObjectCoder")
             .field("urn", &self.urn)
             .finish()

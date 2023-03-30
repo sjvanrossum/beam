@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-mod data;
 mod external_worker_service;
 mod operators;
 
@@ -28,9 +27,9 @@ pub mod worker_main;
 pub mod test_utils {
     use std::sync::Mutex;
 
-    pub static mut RECORDING_OPERATOR_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    pub static RECORDING_OPERATOR_LOGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    pub unsafe fn reset_log() {
+    pub fn reset_log() {
         let mut log = RECORDING_OPERATOR_LOGS.lock().unwrap();
         *log.as_mut() = Vec::new();
     }

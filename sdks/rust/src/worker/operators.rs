@@ -29,10 +29,9 @@ use serde_json;
 
 use crate::internals::serialize;
 use crate::internals::urns;
-use crate::proto::beam_api::fn_execution::{ProcessBundleDescriptor, RemoteGrpcPort};
+use crate::proto::beam_api::fn_execution::ProcessBundleDescriptor;
 use crate::proto::beam_api::pipeline::PTransform;
 
-use crate::worker::data::MultiplexingDataChannel;
 use crate::worker::sdk_worker::BundleProcessor;
 use crate::worker::test_utils::RECORDING_OPERATOR_LOGS;
 
@@ -249,7 +248,7 @@ pub struct OperatorContext {
 }
 
 impl fmt::Debug for OperatorContext {
-    fn fmt<'a>(&'a self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("OperatorContext")
             .field("descriptor", &self.descriptor)
             .field("bundle_processor", &self.bundle_processor)
@@ -298,10 +297,10 @@ impl WindowedValue {
 
 #[derive(Debug)]
 pub struct CreateOperator {
-    transform_id: Arc<String>,
-    transform: Arc<PTransform>,
-    context: Arc<OperatorContext>,
-    operator_discriminant: OperatorDiscriminants,
+    _transform_id: Arc<String>,
+    _transform: Arc<PTransform>,
+    _context: Arc<OperatorContext>,
+    _operator_discriminant: OperatorDiscriminants,
 
     receivers: Vec<Arc<Receiver>>,
     data: Vec<String>,
@@ -334,10 +333,10 @@ impl OperatorI for CreateOperator {
             .collect();
 
         Self {
-            transform_id,
-            transform,
-            context,
-            operator_discriminant,
+            _transform_id: transform_id,
+            _transform: transform,
+            _context: context,
+            _operator_discriminant: operator_discriminant,
             receivers,
             data,
         }
@@ -352,21 +351,17 @@ impl OperatorI for CreateOperator {
         }
     }
 
-    fn process(&self, value: &WindowedValue) {
-        ()
-    }
+    fn process(&self, _value: &WindowedValue) {}
 
-    fn finish_bundle(&self) {
-        ()
-    }
+    fn finish_bundle(&self) {}
 }
 
 #[derive(Debug)]
 pub struct RecordingOperator {
     transform_id: Arc<String>,
-    transform: Arc<PTransform>,
-    context: Arc<OperatorContext>,
-    operator_discriminant: OperatorDiscriminants,
+    _transform: Arc<PTransform>,
+    _context: Arc<OperatorContext>,
+    _operator_discriminant: OperatorDiscriminants,
 
     receivers: Vec<Arc<Receiver>>,
 }
@@ -389,18 +384,16 @@ impl OperatorI for RecordingOperator {
 
         Self {
             transform_id,
-            transform,
-            context,
-            operator_discriminant: operator_discriminant,
+            _transform: transform,
+            _context: context,
+            _operator_discriminant: operator_discriminant,
             receivers,
         }
     }
 
     fn start_bundle(&self) {
-        unsafe {
-            let mut log = RECORDING_OPERATOR_LOGS.lock().unwrap();
-            log.push(format!("{}.start_bundle()", self.transform_id));
-        }
+        let mut log = RECORDING_OPERATOR_LOGS.lock().unwrap();
+        log.push(format!("{}.start_bundle()", self.transform_id));
     }
 
     fn process(&self, value: &WindowedValue) {
@@ -422,10 +415,8 @@ impl OperatorI for RecordingOperator {
     }
 
     fn finish_bundle(&self) {
-        unsafe {
-            let mut log = RECORDING_OPERATOR_LOGS.lock().unwrap();
-            log.push(format!("{}.finish_bundle()", self.transform_id));
-        }
+        let mut log = RECORDING_OPERATOR_LOGS.lock().unwrap();
+        log.push(format!("{}.finish_bundle()", self.transform_id));
     }
 }
 

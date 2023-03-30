@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::coders::coders::CoderI;
 use crate::coders::required_coders::BytesCoder;
+use crate::coders::CoderI;
 use crate::proto::beam_api::pipeline as proto_pipeline;
 
 use crate::internals::pipeline::Pipeline;
@@ -159,7 +159,7 @@ where
     In: Clone + Send,
     Out: Clone + Send,
 {
-    fn expand(&self, input: &PValue<In>) -> PValue<Out>
+    fn expand(&self, _input: &PValue<In>) -> PValue<Out>
     where
         Self: Sized,
     {
@@ -169,8 +169,8 @@ where
     fn expand_internal(
         &self,
         input: &PValue<In>,
-        pipeline: Arc<Pipeline>,
-        transform_proto: &mut proto_pipeline::PTransform,
+        _pipeline: Arc<Pipeline>,
+        _transform_proto: &mut proto_pipeline::PTransform,
     ) -> PValue<Out>
     where
         Self: Sized,

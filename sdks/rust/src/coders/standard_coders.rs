@@ -32,9 +32,9 @@ use std::io::{self, ErrorKind, Read, Write};
 
 use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
-use crate::coders::coders::{CoderI, CoderTypeDiscriminants, Context};
 use crate::coders::required_coders::BytesCoder;
 use crate::coders::urns::*;
+use crate::coders::{CoderI, CoderTypeDiscriminants, Context};
 
 #[derive(Clone)]
 pub struct StrUtf8Coder {
@@ -92,7 +92,7 @@ impl Default for StrUtf8Coder {
 }
 
 impl fmt::Debug for StrUtf8Coder {
-    fn fmt<'a>(&'a self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("StrUtf8Coder")
             .field("urn", &self.urn)
             .finish()
@@ -146,7 +146,7 @@ impl Default for VarIntCoder {
 }
 
 impl fmt::Debug for VarIntCoder {
-    fn fmt<'a>(&'a self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("VarIntCoder")
             .field("urn", &self.urn)
             .finish()

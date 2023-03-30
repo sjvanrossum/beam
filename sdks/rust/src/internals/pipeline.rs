@@ -20,7 +20,7 @@ use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::coders::coders::CoderI;
+use crate::coders::CoderI;
 use crate::proto::beam_api::pipeline as proto_pipeline;
 
 use crate::internals::pvalue::{flatten_pvalue, PTransform, PValue};
@@ -159,7 +159,7 @@ impl<'a> Pipeline {
 
     pub fn pre_apply_transform<In, Out, F>(
         &self,
-        transform: &F,
+        _transform: &F,
         input: &PValue<In>,
     ) -> (String, proto_pipeline::PTransform)
     where
@@ -302,8 +302,8 @@ impl<'a> Pipeline {
     // TODO: deal with bounds and windows
     pub fn post_apply_transform<In, Out, F>(
         &self,
-        transform: F,
-        transform_proto: proto_pipeline::PTransform,
+        _transform: F,
+        _transform_proto: proto_pipeline::PTransform,
         result: PValue<Out>,
     ) -> PValue<Out>
     where
@@ -332,9 +332,11 @@ impl<'a> Pipeline {
 
     pub fn create_pcollection_id_internal(&self, coder_id: String) -> String {
         let pcoll_id = self.context.create_unique_name("pc".to_string());
-        let mut pcoll_proto: proto_pipeline::PCollection = proto_pipeline::PCollection::default();
-        pcoll_proto.unique_name = pcoll_id.clone();
-        pcoll_proto.coder_id = coder_id;
+        let pcoll_proto: proto_pipeline::PCollection = proto_pipeline::PCollection {
+            unique_name: pcoll_id.clone(),
+            coder_id,
+            ..Default::default()
+        };
 
         let mut pipeline_proto = self.proto.lock().unwrap();
         pipeline_proto

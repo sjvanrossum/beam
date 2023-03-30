@@ -31,10 +31,9 @@ use tonic::Status;
 use crate::proto::beam_api::fn_execution::instruction_request;
 use crate::proto::beam_api::fn_execution::{
     beam_fn_control_client::BeamFnControlClient, FinalizeBundleRequest,
-    GetProcessBundleDescriptorRequest, HarnessMonitoringInfosRequest, InstructionRequest,
-    InstructionResponse, MonitoringInfosMetadataRequest, ProcessBundleDescriptor,
-    ProcessBundleProgressRequest, ProcessBundleRequest, ProcessBundleResponse,
-    ProcessBundleSplitRequest, ProcessBundleSplitResponse, RegisterRequest,
+    GetProcessBundleDescriptorRequest, HarnessMonitoringInfosRequest, InstructionResponse,
+    MonitoringInfosMetadataRequest, ProcessBundleDescriptor, ProcessBundleProgressRequest,
+    ProcessBundleRequest, ProcessBundleSplitRequest, RegisterRequest,
 };
 use crate::proto::beam_api::pipeline::PTransform;
 
@@ -61,7 +60,7 @@ impl Interceptor for WorkerIdInterceptor {
 }
 
 type BundleDescriptorId = String;
-type InstructionId = String;
+type _InstructionId = String;
 
 // TODO(sjvanrossum): Convert simple map caches to concurrent caches.
 // Using concurrent caches removes the need to synchronize on the worker instance in every context.
@@ -72,11 +71,11 @@ pub struct Worker {
     // Cheap and safe to clone
     process_bundle_descriptors:
         moka::future::Cache<BundleDescriptorId, Arc<ProcessBundleDescriptor>>,
-    bundle_processors: HashMap<String, BundleProcessor>,
-    active_bundle_processors: HashMap<String, BundleProcessor>,
-    id: String,
-    endpoints: WorkerEndpoints,
-    options: HashMap<String, String>,
+    _bundle_processors: HashMap<String, BundleProcessor>,
+    _active_bundle_processors: HashMap<String, BundleProcessor>,
+    _id: String,
+    _endpoints: WorkerEndpoints,
+    _options: HashMap<String, String>,
 }
 
 impl Worker {
@@ -95,11 +94,11 @@ impl Worker {
             control_client: client,
             // TODO(sjvanrossum): Maybe define the eviction policy
             process_bundle_descriptors: moka::future::Cache::builder().build(),
-            bundle_processors: HashMap::new(),
-            active_bundle_processors: HashMap::new(),
-            id,
-            endpoints,
-            options: HashMap::new(),
+            _bundle_processors: HashMap::new(),
+            _active_bundle_processors: HashMap::new(),
+            _id: id,
+            _endpoints: endpoints,
+            _options: HashMap::new(),
         }))
     }
 
@@ -155,11 +154,11 @@ impl Worker {
         todo!()
     }
 
-    fn process_bundle(&self, request: ProcessBundleRequest) -> () {
+    fn process_bundle(&self, request: ProcessBundleRequest) {
         let mut client = self.control_client.clone();
         let descriptor_cache = self.process_bundle_descriptors.clone();
         tokio::spawn(async move {
-            let descriptor = descriptor_cache
+            let _descriptor = descriptor_cache
                 .try_get_with::<_, Status>(request.process_bundle_descriptor_id.clone(), async {
                     let res = client
                         .get_process_bundle_descriptor(GetProcessBundleDescriptorRequest {
@@ -176,27 +175,27 @@ impl Worker {
         });
     }
 
-    fn process_bundle_progress(&self, request: ProcessBundleProgressRequest) -> () {
+    fn process_bundle_progress(&self, _request: ProcessBundleProgressRequest) {
         // TODO(sjvanrossum): Flesh out after process_bundle is sufficiently implemented
     }
 
-    fn process_bundle_split(&self, request: ProcessBundleSplitRequest) -> () {
+    fn process_bundle_split(&self, _request: ProcessBundleSplitRequest) {
         // TODO(sjvanrossum): Flesh out after process_bundle is sufficiently implemented
     }
 
-    fn finalize_bundle(&self, request: FinalizeBundleRequest) -> () {
+    fn finalize_bundle(&self, _request: FinalizeBundleRequest) {
         // TODO(sjvanrossum): Flesh out after process_bundle is sufficiently implemented.
     }
 
-    fn monitoring_infos(&self, request: MonitoringInfosMetadataRequest) -> () {
+    fn monitoring_infos(&self, _request: MonitoringInfosMetadataRequest) {
         // TODO: Implement
     }
 
-    fn harness_monitoring_infos(&self, request: HarnessMonitoringInfosRequest) -> () {
+    fn harness_monitoring_infos(&self, _request: HarnessMonitoringInfosRequest) {
         // TODO: Implement
     }
 
-    fn register(&self, request: RegisterRequest) -> () {
+    fn register(&self, _request: RegisterRequest) {
         // TODO: Implement or maybe respond with a failure since this is deprecated
     }
 }
@@ -329,8 +328,8 @@ impl BundleProcessor {
 
         let operator_opt = operators.get(&transform_id);
 
-        if operator_opt.is_some() {
-            operator_opt.unwrap().clone()
+        if let Some(operator) = operator_opt {
+            operator.clone()
         } else {
             let descriptor = bundle_processor.descriptor.clone();
             drop(operators);

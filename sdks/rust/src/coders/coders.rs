@@ -82,19 +82,23 @@ pub enum CoderType {
 
 /// This is the base interface for coders, which are responsible in Apache Beam to encode and decode
 ///  elements of a PCollection.
-pub trait CoderI<T> {
+///
+/// # Type parameters
+///
+/// * `E` - The type of the elements to be encoded/decoded.
+pub trait CoderI<E> {
     fn get_coder_type(&self) -> &CoderTypeDiscriminants;
 
     /// Encode an element into a stream of bytes
     fn encode(
         &self,
-        element: T,
+        element: E,
         writer: &mut dyn Write,
         context: &Context,
     ) -> Result<usize, io::Error>;
 
     /// Decode an element from an incoming stream of bytes
-    fn decode(&self, reader: &mut dyn Read, context: &Context) -> Result<T, io::Error>;
+    fn decode(&self, reader: &mut dyn Read, context: &Context) -> Result<E, io::Error>;
 }
 
 /// The context for encoding a PCollection element.

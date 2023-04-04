@@ -16,13 +16,11 @@
  * limitations under the License.
  */
 
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::coders::coders::CoderI;
-use crate::coders::required_coders::BytesCoder;
+use crate::elem_types::ElemType;
 use crate::proto::beam_api::pipeline as proto_pipeline;
 
 use crate::internals::pipeline::Pipeline;
@@ -31,21 +29,21 @@ use crate::internals::pipeline::Pipeline;
 // T should be never(!) for Root
 // https://github.com/rust-lang/rust/issues/35121
 #[derive(Clone)]
-pub struct PValue<T>
+pub struct PValue<E>
 where
-    T: Clone + Send,
+    E: ElemType,
 {
     id: String,
     ptype: PType,
     pcoll_proto: proto_pipeline::PCollection,
     pipeline: Arc<Pipeline>,
 
-    phantom: PhantomData<T>,
+    phantom: PhantomData<E>,
 }
 
-impl<T> PValue<T>
+impl<E> PValue<E>
 where
-    T: Clone + Send,
+    E: ElemType,
 {
     pub fn new(
         ptype: PType,
@@ -124,8 +122,8 @@ where
 
     pub fn apply<F, Out>(self, transform: F) -> PValue<Out>
     where
-        Out: Clone + Send,
-        F: PTransform<T, Out> + Send,
+        Out: ElemType,
+        F: PTransform<E, Out> + Send,
     {
         self.pipeline
             .apply_transform(transform, &self, self.pipeline.clone())
@@ -142,7 +140,7 @@ where
 /// with keys corresponding roughly to the path taken to get there
 pub fn flatten_pvalue<T>(pvalue: PValue<T>, prefix: Option<String>) -> HashMap<String, PValue<T>>
 where
-    T: Clone + Send,
+    T: ElemType,
 {
     let mut result: HashMap<String, PValue<T>> = HashMap::new();
     match pvalue.ptype {
@@ -178,8 +176,8 @@ pub enum PType {
 // TODO: move this to transforms directory
 pub trait PTransform<In, Out>
 where
-    In: Clone + Send,
-    Out: Clone + Send,
+    In: ElemType,
+    Out: ElemType,
 {
     fn expand(&self, input: &PValue<In>) -> PValue<Out>
     where

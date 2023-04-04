@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};

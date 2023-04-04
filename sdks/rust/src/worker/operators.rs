@@ -279,7 +279,7 @@ impl WindowedValue {
             windows: Rc::new(vec![Box::new(GlobalWindow {})]),
             timestamp: std::time::Instant::now(), // TODO: MinTimestamp
             pane_info: Box::new([]),
-            value: value,
+            value,
         }
     }
 
@@ -288,7 +288,7 @@ impl WindowedValue {
             windows: self.windows.clone(),
             timestamp: self.timestamp,
             pane_info: self.pane_info.clone(),
-            value: value,
+            value,
         }
     }
 }
@@ -451,13 +451,9 @@ impl OperatorI for ImpulsePerBundleOperator {
         }
     }
 
-    fn process(&self, value: &WindowedValue) {
-        ()
-    }
+    fn process(&self, value: &WindowedValue) {}
 
-    fn finish_bundle(&self) {
-        ()
-    }
+    fn finish_bundle(&self) {}
 }
 
 struct GroupByKeyWithinBundleOperator {
@@ -569,7 +565,7 @@ impl OperatorI for ParDoOperator {
             transform_id,
             transform: transform_proto,
             context,
-            operator_discriminant: operator_discriminant,
+            operator_discriminant,
             receivers,
             dofn,
         }

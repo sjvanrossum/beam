@@ -19,25 +19,13 @@
 use std::fmt;
 use std::marker::PhantomData;
 
-use crate::coders::coders::{CoderI, CoderTypeDiscriminants};
+use crate::coders::coders::CoderI;
 use crate::coders::standard_coders::*;
 use crate::coders::urns::*;
 
 #[derive(Eq, PartialEq)]
 pub struct GeneralObjectCoder<T> {
-    coder_type: CoderTypeDiscriminants,
-
     phantom: PhantomData<T>,
-}
-
-impl<T> GeneralObjectCoder<T> {
-    pub fn new() -> Self {
-        Self {
-            coder_type: CoderTypeDiscriminants::GeneralObject,
-
-            phantom: PhantomData::default(),
-        }
-    }
 }
 
 impl CoderI for GeneralObjectCoder<String> {
@@ -45,10 +33,6 @@ impl CoderI for GeneralObjectCoder<String> {
 
     fn get_coder_urn() -> &'static str {
         GENERAL_OBJECT_CODER_URN
-    }
-
-    fn get_coder_type(&self) -> &CoderTypeDiscriminants {
-        &self.coder_type
     }
 
     fn encode(
@@ -60,7 +44,7 @@ impl CoderI for GeneralObjectCoder<String> {
         let marker = "S".as_bytes();
         writer.write_all(marker).unwrap();
 
-        StrUtf8Coder::new().encode(element, writer, context)
+        StrUtf8Coder::default().encode(element, writer, context)
     }
 
     fn decode(
@@ -75,13 +59,15 @@ impl CoderI for GeneralObjectCoder<String> {
             todo!()
         }
 
-        StrUtf8Coder::new().decode(reader, context)
+        StrUtf8Coder::default().decode(reader, context)
     }
 }
 
 impl<T> Default for GeneralObjectCoder<T> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            phantom: PhantomData::default(),
+        }
     }
 }
 

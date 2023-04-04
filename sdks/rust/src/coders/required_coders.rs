@@ -42,20 +42,22 @@ use crate::coders::urns::*;
 #[derive(Clone)]
 pub struct BytesCoder {
     coder_type: CoderTypeDiscriminants,
-    urn: &'static str,
 }
 
 impl BytesCoder {
     pub fn new() -> Self {
         BytesCoder {
             coder_type: CoderTypeDiscriminants::Bytes,
-            urn: BYTES_CODER_URN,
         }
     }
 }
 
 impl CoderI for BytesCoder {
     type E = Vec<u8>;
+
+    fn get_coder_urn() -> &'static str {
+        BYTES_CODER_URN
+    }
 
     fn get_coder_type(&self) -> &CoderTypeDiscriminants {
         &self.coder_type
@@ -139,7 +141,7 @@ impl Default for BytesCoder {
 impl fmt::Debug for BytesCoder {
     fn fmt<'a>(&'a self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("BytesCoder")
-            .field("urn", &self.urn)
+            .field("urn", &Self::get_coder_urn())
             .finish()
     }
 }
@@ -177,13 +179,16 @@ where
 #[derive(Clone)]
 pub struct KVCoder<KV> {
     coder_type: CoderTypeDiscriminants,
-    urn: &'static str,
 
     phantom: PhantomData<KV>,
 }
 
 impl<K, V> CoderI for KVCoder<KV<K, V>> {
     type E = KV<K, V>;
+
+    fn get_coder_urn() -> &'static str {
+        KV_CODER_URN
+    }
 
     fn get_coder_type(&self) -> &CoderTypeDiscriminants {
         &self.coder_type
@@ -215,7 +220,6 @@ where
     fn default() -> Self {
         Self {
             coder_type: CoderTypeDiscriminants::KV,
-            urn: KV_CODER_URN,
 
             phantom: PhantomData::default(),
         }
@@ -226,7 +230,6 @@ where
 #[derive(Clone)]
 pub struct IterableCoder<T> {
     coder_type: CoderTypeDiscriminants,
-    urn: &'static str,
 
     phantom: PhantomData<T>,
 }
@@ -237,6 +240,10 @@ pub struct Iterable<T> {
 
 impl<T> CoderI for IterableCoder<T> {
     type E = Iterable<T>;
+
+    fn get_coder_urn() -> &'static str {
+        ITERABLE_CODER_URN
+    }
 
     fn get_coder_type(&self) -> &CoderTypeDiscriminants {
         &self.coder_type

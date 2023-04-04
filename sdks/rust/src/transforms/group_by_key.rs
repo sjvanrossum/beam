@@ -20,6 +20,8 @@ use std::iter::Iterator;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::coders::required_coders::KV;
+use crate::elem_types::ElemType;
 use crate::internals::pipeline::Pipeline;
 use crate::internals::pvalue::{PTransform, PValue};
 use crate::internals::serialize;
@@ -34,7 +36,7 @@ pub struct GroupByKey<K, V> {
 }
 
 // TODO: Use coders to allow arbitrary keys.
-impl<V: Clone + Sync + Send + 'static> GroupByKey<String, V> {
+impl<V: ElemType> GroupByKey<String, V> {
     pub fn new() -> Self {
         Self {
             payload: serialize::serialize_fn::<Box<dyn serialize::KeyExtractor>>(Box::new(
@@ -48,15 +50,13 @@ impl<V: Clone + Sync + Send + 'static> GroupByKey<String, V> {
 
 // TODO: The return value should be something like dyn IntoIterator<Item = V, IntoIter = Box<dyn Iterator<Item = V>>> + Clone + Sync + Send + 'static,
 // to avoid requiring it to be in memory.
-impl<K: Clone + std::marker::Send, V: Clone + std::marker::Send> PTransform<(K, V), (K, Vec<V>)>
-    for GroupByKey<K, V>
-{
+impl<K: ElemType, V: ElemType> PTransform<KV<K, V>, KV<K, Vec<V>>> for GroupByKey<K, V> {
     fn expand_internal(
         &self,
-        _input: &PValue<(K, V)>, // really a PCollection
+        _input: &PValue<KV<K, V>>, // really a PCollection
         pipeline: Arc<Pipeline>,
         transform_proto: &mut proto_pipeline::PTransform,
-    ) -> PValue<(K, Vec<V>)> // really a PCollection
+    ) -> PValue<KV<K, Vec<V>>> // really a PCollection
     {
         transform_proto.spec = Some(proto_pipeline::FunctionSpec {
             urn: urns::GROUP_BY_KEY_URN.to_string(),

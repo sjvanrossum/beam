@@ -258,7 +258,7 @@ impl fmt::Debug for OperatorContext {
 
 // ******* Windowed Element Primitives *******
 
-pub trait Window: core::fmt::Debug + Sync + Send {}
+pub trait Window: core::fmt::Debug + Send {}
 
 #[derive(Clone, Debug)]
 pub struct GlobalWindow;
@@ -465,7 +465,7 @@ struct GroupByKeyWithinBundleOperator {
     key_extractor: &'static Box<dyn serialize::KeyExtractor>,
     // TODO: Operator requiring locking for structures only ever manipulated in
     // a single thread seems inefficient and overkill.
-    grouped_values: Arc<Mutex<HashMap<String, Box<Vec<Box<dyn Any + Sync + Send>>>>>>,
+    grouped_values: Arc<Mutex<HashMap<String, Box<Vec<Box<dyn Any + Send>>>>>>,
 }
 
 impl OperatorI for GroupByKeyWithinBundleOperator {

@@ -36,7 +36,7 @@ impl Impulse {
 
 // Input type should be never(!)
 // https://github.com/rust-lang/rust/issues/35121
-pub type Never = bool;
+pub type Never = ();
 
 impl PTransform<Never, Vec<u8>> for Impulse {
     fn expand_internal(
@@ -51,7 +51,6 @@ impl PTransform<Never, Vec<u8>> for Impulse {
         };
         transform_proto.spec = Some(spec);
 
-        pipeline.register_coder::<BytesCoder, Vec<u8>>(Box::new(BytesCoder::new()));
         pipeline.create_pcollection_internal(
             pipeline.register_coder_proto(proto_pipeline::Coder {
                 spec: Some(proto_pipeline::FunctionSpec {

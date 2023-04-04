@@ -18,9 +18,19 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::coders::{required_coders::*, rust_coders::*, standard_coders::*, *};
+    use crate::{
+        coders::{
+            coder_resolver::{
+                BytesCoderResolverDefault, CoderResolver, StrUtf8CoderResolverDefault,
+                VarIntCoderResolverDefault,
+            },
+            required_coders::*,
+            rust_coders::*,
+            standard_coders::*, CoderI, Context,
+        },
+        elem_types::ElemType,
+    };
 
-    use std::any::Any;
     use std::fmt;
 
     use bytes::{Buf, BufMut};
@@ -85,16 +95,16 @@ mod tests {
         }
     }
 
-    impl<T> CoderTestUtils for IterableCoder<T>
+    impl<E> CoderTestUtils for IterableCoder<E>
     where
-        T: Clone + fmt::Debug,
+        E: ElemType + Clone + fmt::Debug,
     {
-        type InternalCoderType = T;
+        type InternalCoderType = E;
 
         fn parse_yaml_value(
             &self,
             _value: &serde_yaml::Value,
-        ) -> <IterableCoder<T> as CoderTestUtils>::InternalCoderType {
+        ) -> <IterableCoder<E> as CoderTestUtils>::InternalCoderType {
             todo!()
         }
     }
@@ -110,13 +120,13 @@ mod tests {
         }
     }
 
-    impl CoderTestUtils for VarIntCoder {
+    impl CoderTestUtils for VarIntCoder<u64> {
         type InternalCoderType = u64;
 
         fn parse_yaml_value(
             &self,
             value: &serde_yaml::Value,
-        ) -> <VarIntCoder as CoderTestUtils>::InternalCoderType {
+        ) -> <VarIntCoder<u64> as CoderTestUtils>::InternalCoderType {
             if !value.is_u64() {
                 return value.as_i64().unwrap() as u64;
             }
@@ -127,8 +137,6 @@ mod tests {
 
     #[test]
     fn test_standard_coders() {
-        let coder_registry = CoderRegistry::new();
-
         // TODO: Move this to utils module
         let current_dir = std::env::current_dir().unwrap();
         let beam_root_dir = current_dir.as_path().parent().unwrap().parent().unwrap();
@@ -158,47 +166,41 @@ mod tests {
                 continue;
             }
 
-            let coder_type = coder_registry.get_coder_type(urn);
             let nested = false;
-
-            // TODO: generalize
-            match coder_type {
-                CoderTypeDiscriminants::Bytes => {
-                    let c = BytesCoder::new();
-                    run_unnested::<BytesCoder, Vec<u8>>(&c, nested, &spec);
-                }
-                CoderTypeDiscriminants::StrUtf8 => {
-                    let c = StrUtf8Coder::new();
-                    run_unnested::<StrUtf8Coder, String>(&c, nested, &spec);
-                }
-                CoderTypeDiscriminants::VarIntCoder => {
-                    let c = VarIntCoder::new();
-                    run_unnested::<VarIntCoder, u64>(&c, nested, &spec);
-                }
-                _ => todo!(),
-            }
+            run_unnested(urn, nested, &spec);
         }
     }
 
-    fn run_unnested<'a, C, E>(coder: &(dyn Any + 'a), _nested: bool, spec: &Value)
+    fn run_unnested(coder_urn: &str, nested: bool, spec: &Value) {
+        if let Some(c) = BytesCoderResolverDefault::resolve(coder_urn) {
+            _run_unnested(&c, nested, spec)
+        } else if let Some(c) = StrUtf8CoderResolverDefault::resolve(coder_urn) {
+            _run_unnested(&c, nested, spec)
+        } else if let Some(c) = VarIntCoderResolverDefault::<u64>::resolve(coder_urn) {
+            _run_unnested(&c, nested, spec)
+        } else {
+            todo!()
+        }
+    }
+
+    fn _run_unnested<'a, C>(coder: &C, _nested: bool, spec: &Value)
     where
-        C: CoderI<E> + CoderTestUtils + CoderTestUtils<InternalCoderType = E> + 'a,
-        E: Clone + std::fmt::Debug + PartialEq,
+        C: CoderI + CoderTestUtils + CoderTestUtils<InternalCoderType = C::E> + 'a,
+        C::E: Clone + std::fmt::Debug + PartialEq,
     {
         let examples = spec.get("examples").unwrap().as_mapping().unwrap();
 
         for (expected, original) in examples.iter() {
             // TODO: test coders for both Context types
-            run_case::<C, E>(coder, expected, original);
+            run_case::<C>(coder, expected, original);
         }
     }
 
-    fn run_case<'a, C, E>(coder: &(dyn Any + 'a), expected_encoded: &Value, original: &Value)
+    fn run_case<'a, C>(coder: &C, expected_encoded: &Value, original: &Value)
     where
-        C: CoderI<E> + CoderTestUtils + CoderTestUtils<InternalCoderType = E> + 'a,
-        E: Clone + std::fmt::Debug + PartialEq,
+        C: CoderI + CoderTestUtils + CoderTestUtils<InternalCoderType = C::E> + 'a,
+        C::E: Clone + std::fmt::Debug + PartialEq,
     {
-        let c: &C = coder.downcast_ref::<C>().unwrap();
         // The expected encodings in standard_coders.yaml need to be read as UTF-16
         let expected_enc_utf16: Vec<u16> =
             expected_encoded.as_str().unwrap().encode_utf16().collect();
@@ -213,15 +215,16 @@ mod tests {
         // TODO: revisit when context gets fully implemented
         let context = Context::WholeStream;
 
-        let expected_dec = c.parse_yaml_value(original);
+        let expected_dec = coder.parse_yaml_value(original);
 
-        c.encode(expected_dec.clone(), &mut writer, &context)
+        coder
+            .encode(expected_dec.clone(), &mut writer, &context)
             .unwrap();
         let encoded = writer.into_inner();
 
-        let decoded = c.decode(&mut reader, &context).unwrap();
+        let decoded = coder.decode(&mut reader, &context).unwrap();
 
-        println!("\n---------\nCoder type: {:?}", c.get_coder_type());
+        println!("\n---------\nCoder type: {:?}", coder);
         println!(
             "\nExpected encoded: {:?}\nGenerated encoded: {:?}\n\nExpected decoded: {:?}\nGenerated decoded: {:?}",
             expected_enc.as_slice(), encoded, expected_dec, decoded
@@ -234,7 +237,7 @@ mod tests {
     #[test]
     fn test_general_object_coder() {
         fn string_test() {
-            let coder: GeneralObjectCoder<String> = GeneralObjectCoder::new();
+            let coder: GeneralObjectCoder<String> = GeneralObjectCoder::default();
             let input = "abcde".to_string();
 
             let mut writer = vec![].writer();

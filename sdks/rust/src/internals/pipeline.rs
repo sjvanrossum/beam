@@ -16,11 +16,10 @@
  * limitations under the License.
  */
 
-use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::coders::CoderI;
+use crate::elem_types::ElemType;
 use crate::proto::beam_api::pipeline as proto_pipeline;
 
 use crate::internals::pvalue::{flatten_pvalue, PTransform, PValue};
@@ -65,10 +64,6 @@ pub struct Pipeline {
     transform_stack: Arc<Mutex<Vec<String>>>,
     used_stage_names: Arc<Mutex<HashSet<String>>>,
 
-    // TODO: stop using TypeId as a key
-    // TODO: use something better than Any (maybe use CoderI with an "as_any" method)
-    coders: Mutex<HashMap<TypeId, Box<dyn Any + Send>>>,
-
     coder_proto_counter: Mutex<usize>,
 }
 
@@ -94,36 +89,12 @@ impl<'a> Pipeline {
             transform_stack: Arc::new(Mutex::new(Vec::with_capacity(0))),
             used_stage_names: Arc::new(Mutex::new(HashSet::with_capacity(0))),
 
-            coders: Mutex::new(HashMap::new()),
             coder_proto_counter: Mutex::new(0),
         }
     }
 
     pub fn get_proto(&self) -> Arc<std::sync::Mutex<proto_pipeline::Pipeline>> {
         self.proto.clone()
-    }
-
-    pub fn get_coder<C: CoderI<E> + Clone + 'static, E>(&self, coder_type: &TypeId) -> C {
-        let pipeline_coders = self.coders.lock().unwrap();
-
-        let coder = pipeline_coders.get(coder_type).unwrap();
-        coder.downcast_ref::<C>().unwrap().clone()
-    }
-
-    pub fn register_coder<C: CoderI<E> + 'a, E>(&self, coder: Box<dyn Any + Send + 'a>) -> TypeId {
-        let mut coders = self.coders.lock().unwrap();
-        let concrete_coder = coder.downcast_ref::<C>().unwrap();
-        let concrete_coder_type_id = concrete_coder.type_id();
-
-        for registered_type_id in coders.keys() {
-            if *registered_type_id == concrete_coder_type_id {
-                return *registered_type_id;
-            }
-        }
-
-        coders.insert(concrete_coder_type_id, coder);
-
-        concrete_coder_type_id
     }
 
     // TODO: review need for separate function vs register_coder
@@ -163,8 +134,8 @@ impl<'a> Pipeline {
         input: &PValue<In>,
     ) -> (String, proto_pipeline::PTransform)
     where
-        In: Clone + Send,
-        Out: Clone + Send,
+        In: ElemType,
+        Out: ElemType,
         F: PTransform<In, Out> + Send,
     {
         let transform_id = self.context.create_unique_name("transform".to_string());
@@ -245,14 +216,14 @@ impl<'a> Pipeline {
         pipeline: Arc<Pipeline>,
     ) -> PValue<Out>
     where
-        In: Clone + Send,
-        Out: Clone + Send,
+        In: ElemType,
+        Out: ElemType,
         F: PTransform<In, Out> + Send,
     {
         // TODO: Inline pre_apply and post_apply.
         // (They exist in typescript only to share code between the sync and
         // async variants).
-        let (transform_id, mut transform_proto) = self.pre_apply_transform(&transform, &input);
+        let (transform_id, mut transform_proto) = self.pre_apply_transform(&transform, input);
 
         {
             let mut transform_stack = self.transform_stack.lock().unwrap();
@@ -307,8 +278,8 @@ impl<'a> Pipeline {
         result: PValue<Out>,
     ) -> PValue<Out>
     where
-        In: Clone + Send,
-        Out: Clone + Send,
+        In: ElemType,
+        Out: ElemType,
         F: PTransform<In, Out> + Send,
     {
         result
@@ -320,7 +291,7 @@ impl<'a> Pipeline {
         pipeline: Arc<Pipeline>,
     ) -> PValue<Out>
     where
-        Out: Clone + Send,
+        Out: ElemType,
     {
         // TODO: remove pcoll_proto arg
         PValue::new(

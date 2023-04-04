@@ -34,7 +34,7 @@ pub fn deserialize_fn<T: Any + Sync + Send>(name: &String) -> Option<&'static T>
 
 // TODO: Give these start/finish_bundles, etc.
 pub type GenericDoFn =
-    Box<dyn Fn(&dyn Any) -> Box<dyn Iterator<Item = Box<dyn Any>>> + Sync + Send>;
+    Box<dyn Fn(&dyn Any) -> Box<dyn Iterator<Item = Box<dyn Any>>> + Send + Sync>;
 
 struct GenericDoFnWrapper {
     func: GenericDoFn,
@@ -72,7 +72,7 @@ pub fn to_generic_dofn<T: Any, O: Any, I: IntoIterator<Item = O> + 'static>(
 }
 
 pub fn to_generic_dofn_dyn<T: Any, O: Any, I: IntoIterator<Item = O> + 'static>(
-    func: Box<dyn Fn(&T) -> I + Sync + Send>,
+    func: Box<dyn Fn(&T) -> I + Send + Sync>,
 ) -> GenericDoFn {
     Box::new(
         move |untyped_input: &dyn Any| -> Box<dyn Iterator<Item = Box<dyn Any>>> {

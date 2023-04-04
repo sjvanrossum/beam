@@ -34,27 +34,17 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 use crate::coders::required_coders::BytesCoder;
 use crate::coders::urns::*;
-use crate::coders::{CoderI, CoderTypeDiscriminants, Context};
+use crate::coders::{CoderI, Context};
 
-#[derive(Clone)]
-pub struct StrUtf8Coder {
-    coder_type: CoderTypeDiscriminants,
-    urn: &'static str,
-}
-
-impl StrUtf8Coder {
-    pub fn new() -> Self {
-        Self {
-            coder_type: CoderTypeDiscriminants::StrUtf8,
-            urn: STR_UTF8_CODER_URN,
-        }
-    }
-}
+#[derive(Clone, Default)]
+pub struct StrUtf8Coder {}
 
 // TODO: accept string references as well?
-impl CoderI<String> for StrUtf8Coder {
-    fn get_coder_type(&self) -> &CoderTypeDiscriminants {
-        &self.coder_type
+impl CoderI for StrUtf8Coder {
+    type E = String;
+
+    fn get_coder_urn() -> &'static str {
+        STR_UTF8_CODER_URN
     }
 
     fn encode(
@@ -64,12 +54,12 @@ impl CoderI<String> for StrUtf8Coder {
         context: &Context,
     ) -> Result<usize, io::Error> {
         let bytes = element.as_bytes().to_vec();
-        let coder = BytesCoder::new();
+        let coder = BytesCoder::default();
         coder.encode(bytes, writer, context)
     }
 
     fn decode(&self, reader: &mut dyn Read, context: &Context) -> Result<String, io::Error> {
-        let coder = BytesCoder::new();
+        let coder = BytesCoder::default();
         let bytes = coder.decode(reader, context)?;
 
         let res = String::from_utf8(bytes);
@@ -85,43 +75,29 @@ impl CoderI<String> for StrUtf8Coder {
     }
 }
 
-impl Default for StrUtf8Coder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl fmt::Debug for StrUtf8Coder {
     fn fmt(&self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("StrUtf8Coder")
-            .field("urn", &self.urn)
+            .field("urn", &Self::get_coder_urn())
             .finish()
     }
 }
 
 #[derive(Clone)]
-pub struct VarIntCoder {
-    coder_type: CoderTypeDiscriminants,
-    urn: &'static str,
-}
-
-impl VarIntCoder {
-    pub fn new() -> Self {
-        Self {
-            coder_type: CoderTypeDiscriminants::VarIntCoder,
-            urn: VARINT_CODER_URN,
-        }
-    }
+pub struct VarIntCoder<N: fmt::Debug + VarInt> {
+    _var_int_type: std::marker::PhantomData<N>,
 }
 
 // TODO: passes tests for -1 if it gets casted to u64 and encoded as such.
 // Revisit this later
-impl<N> CoderI<N> for VarIntCoder
+impl<N> CoderI for VarIntCoder<N>
 where
     N: fmt::Debug + VarInt,
 {
-    fn get_coder_type(&self) -> &CoderTypeDiscriminants {
-        &self.coder_type
+    type E = N;
+
+    fn get_coder_urn() -> &'static str {
+        VARINT_CODER_URN
     }
 
     // TODO: try to adapt CoderI such that the context arg is not mandatory
@@ -139,16 +115,18 @@ where
     }
 }
 
-impl Default for VarIntCoder {
+impl<N: fmt::Debug + VarInt> Default for VarIntCoder<N> {
     fn default() -> Self {
-        Self::new()
+        Self {
+            _var_int_type: std::marker::PhantomData,
+        }
     }
 }
 
-impl fmt::Debug for VarIntCoder {
+impl<N: fmt::Debug + VarInt> fmt::Debug for VarIntCoder<N> {
     fn fmt(&self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("VarIntCoder")
-            .field("urn", &self.urn)
+            .field("urn", &Self::get_coder_urn())
             .finish()
     }
 }

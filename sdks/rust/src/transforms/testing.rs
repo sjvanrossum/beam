@@ -23,7 +23,10 @@ use super::flatten::Flatten;
 use super::group_by_key::GroupByKey;
 use super::impulse::Impulse;
 use super::pardo::ParDo;
-use crate::internals::pvalue::{PTransform, PValue};
+use crate::{
+    elem_types::ElemType,
+    internals::pvalue::{PTransform, PValue},
+};
 
 pub struct AssertEqualUnordered<T> {
     expected: Vec<T>,
@@ -37,9 +40,7 @@ impl<T: Any + Ord + Clone> AssertEqualUnordered<T> {
     }
 }
 
-impl<T: Any + Ord + Clone + Sync + Send + std::fmt::Debug> PTransform<T, ()>
-    for AssertEqualUnordered<T>
-{
+impl<T: ElemType> PTransform<T, ()> for AssertEqualUnordered<T> {
     fn expand(&self, input: &PValue<T>) -> PValue<()> {
         // If input is empty, we still need an element to ensure the
         // assertion happens.

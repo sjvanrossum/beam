@@ -36,27 +36,18 @@ use std::marker::PhantomData;
 use integer_encoding::{VarIntReader, VarIntWriter};
 
 use crate::coders::urns::*;
-use crate::coders::{CoderI, CoderTypeDiscriminants, Context};
+use crate::coders::{CoderI, Context};
+use crate::elem_types::ElemType;
 
 /// Coder for byte-array data types
-#[derive(Clone)]
-pub struct BytesCoder {
-    coder_type: CoderTypeDiscriminants,
-    urn: &'static str,
-}
+#[derive(Clone, Default)]
+pub struct BytesCoder {}
 
-impl BytesCoder {
-    pub fn new() -> Self {
-        BytesCoder {
-            coder_type: CoderTypeDiscriminants::Bytes,
-            urn: BYTES_CODER_URN,
-        }
-    }
-}
+impl CoderI for BytesCoder {
+    type E = Vec<u8>;
 
-impl CoderI<Vec<u8>> for BytesCoder {
-    fn get_coder_type(&self) -> &CoderTypeDiscriminants {
-        &self.coder_type
+    fn get_coder_urn() -> &'static str {
+        BYTES_CODER_URN
     }
 
     /// Encode the input element (a byte-string) into the output byte stream from `writer`.
@@ -128,16 +119,10 @@ impl CoderI<Vec<u8>> for BytesCoder {
     }
 }
 
-impl Default for BytesCoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl fmt::Debug for BytesCoder {
     fn fmt(&self, o: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         o.debug_struct("BytesCoder")
-            .field("urn", &self.urn)
+            .field("urn", &Self::get_coder_urn())
             .finish()
     }
 }
@@ -150,8 +135,8 @@ pub struct KV<K, V> {
 
 impl<K, V> KV<K, V>
 where
-    K: Clone + fmt::Debug,
-    V: Clone + fmt::Debug,
+    K: Clone + fmt::Debug + Send,
+    V: Clone + fmt::Debug + Send,
 {
     pub fn new() -> Self {
         KV {
@@ -163,8 +148,8 @@ where
 
 impl<K, V> Default for KV<K, V>
 where
-    K: Clone + fmt::Debug,
-    V: Clone + fmt::Debug,
+    K: Clone + fmt::Debug + Send,
+    V: Clone + fmt::Debug + Send,
 {
     fn default() -> Self {
         Self::new()
@@ -172,17 +157,20 @@ where
 }
 
 /// A coder for a key-value pair
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KVCoder<KV> {
-    coder_type: CoderTypeDiscriminants,
-    _urn: &'static str,
-
     phantom: PhantomData<KV>,
 }
 
-impl<K, V> CoderI<KV<K, V>> for KVCoder<KV<K, V>> {
-    fn get_coder_type(&self) -> &CoderTypeDiscriminants {
-        &self.coder_type
+impl<K, V> CoderI for KVCoder<KV<K, V>>
+where
+    K: fmt::Debug + Send + 'static,
+    V: fmt::Debug + Send + 'static,
+{
+    type E = KV<K, V>;
+
+    fn get_coder_urn() -> &'static str {
+        KV_CODER_URN
     }
 
     /// Encode the input element (a key-value pair) into a byte output stream. They key and value are encoded one after the
@@ -203,22 +191,43 @@ impl<K, V> CoderI<KV<K, V>> for KVCoder<KV<K, V>> {
     }
 }
 
+impl<K, V> Default for KVCoder<KV<K, V>>
+where
+    K: Send,
+    V: Send,
+{
+    fn default() -> Self {
+        Self {
+            phantom: PhantomData::default(),
+        }
+    }
+}
+
 /// A coder for a 'list' or a series of elements of the same type
-#[derive(Clone)]
-pub struct IterableCoder<T> {
-    coder_type: CoderTypeDiscriminants,
-    _urn: &'static str,
-
-    phantom: PhantomData<T>,
+#[derive(Clone, Debug)]
+pub struct IterableCoder<E>
+where
+    E: ElemType,
+{
+    phantom: PhantomData<E>,
 }
 
-pub struct Iterable<T> {
-    phantom: PhantomData<T>,
+#[derive(Clone, Debug)]
+pub struct Iterable<E>
+where
+    E: ElemType,
+{
+    phantom: PhantomData<E>,
 }
 
-impl<T> CoderI<Iterable<T>> for IterableCoder<T> {
-    fn get_coder_type(&self) -> &CoderTypeDiscriminants {
-        &self.coder_type
+impl<ItE> CoderI for IterableCoder<ItE>
+where
+    ItE: ElemType + fmt::Debug,
+{
+    type E = ItE;
+
+    fn get_coder_urn() -> &'static str {
+        ITERABLE_CODER_URN
     }
 
     /// Encode the input iterable into a byte output stream. Elements can be encoded in two different ways:
@@ -231,7 +240,7 @@ impl<T> CoderI<Iterable<T>> for IterableCoder<T> {
     /// Then, each element is encoded individually in `Context::NeedsDelimiters`.
     fn encode(
         &self,
-        _element: Iterable<T>,
+        _element: ItE,
         _writer: &mut dyn Write,
         _context: &Context,
     ) -> Result<usize, io::Error> {
@@ -239,7 +248,18 @@ impl<T> CoderI<Iterable<T>> for IterableCoder<T> {
     }
 
     /// Decode the input byte stream into a `Iterable` element
-    fn decode(&self, _reader: &mut dyn Read, _context: &Context) -> Result<Iterable<T>, io::Error> {
+    fn decode(&self, _reader: &mut dyn Read, _context: &Context) -> Result<ItE, io::Error> {
         todo!()
+    }
+}
+
+impl<E> Default for IterableCoder<E>
+where
+    E: ElemType,
+{
+    fn default() -> Self {
+        Self {
+            phantom: PhantomData::default(),
+        }
     }
 }

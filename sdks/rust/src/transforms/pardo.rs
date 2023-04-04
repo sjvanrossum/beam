@@ -19,6 +19,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::elem_types::ElemType;
 use crate::internals::pipeline::Pipeline;
 use crate::internals::pvalue::{PTransform, PValue};
 use crate::internals::serialize;
@@ -54,14 +55,14 @@ impl<T: 'static, O: 'static> ParDo<T, O> {
     pub fn from_map(func: fn(&T) -> O) -> Self {
         Self::from_dyn_map(Box::new(func))
     }
-    pub fn from_dyn_map(func: Box<dyn Fn(&T) -> O + Sync + Send>) -> Self {
+    pub fn from_dyn_map(func: Box<dyn Fn(&T) -> O + Send + Sync>) -> Self {
         Self::from_dyn_flat_map(Box::new(move |x: &T| -> Vec<O> { vec![func(x)] }))
     }
     pub fn from_flat_map<I: IntoIterator<Item = O> + 'static>(func: fn(&T) -> I) -> Self {
         Self::from_dyn_flat_map(Box::new(func))
     }
     pub fn from_dyn_flat_map<I: IntoIterator<Item = O> + 'static>(
-        func: Box<dyn Fn(&T) -> I + Sync + Send>,
+        func: Box<dyn Fn(&T) -> I + Send + Sync>,
     ) -> Self {
         Self {
             payload: serialize::serialize_fn::<serialize::GenericDoFn>(Box::new(
@@ -73,7 +74,7 @@ impl<T: 'static, O: 'static> ParDo<T, O> {
     }
 }
 
-impl<T: Clone + std::marker::Send, O: Clone + std::marker::Send> PTransform<T, O> for ParDo<T, O> {
+impl<T: ElemType, O: ElemType> PTransform<T, O> for ParDo<T, O> {
     fn expand_internal(
         &self,
         _input: &PValue<T>, // really a PCollection<T>

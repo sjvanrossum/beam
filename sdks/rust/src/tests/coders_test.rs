@@ -26,9 +26,10 @@ mod tests {
             },
             required_coders::*,
             rust_coders::*,
-            standard_coders::*, CoderI, Context,
+            standard_coders::*,
+            CoderI, Context,
         },
-        elem_types::ElemType,
+        elem_types::{kv::KV, ElemType},
     };
 
     use std::fmt;

@@ -19,8 +19,8 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::coders::required_coders::KV;
 use crate::elem_types::ElemType;
+use crate::elem_types::kv::KV;
 use crate::internals::pipeline::Pipeline;
 use crate::internals::pvalue::{PTransform, PValue};
 use crate::internals::serialize;

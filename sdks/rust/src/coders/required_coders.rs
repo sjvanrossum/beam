@@ -37,6 +37,7 @@ use integer_encoding::{VarIntReader, VarIntWriter};
 
 use crate::coders::urns::*;
 use crate::coders::{CoderI, Context};
+use crate::elem_types::kv::KV;
 use crate::elem_types::ElemType;
 
 /// Coder for byte-array data types
@@ -124,26 +125,6 @@ impl fmt::Debug for BytesCoder {
         o.debug_struct("BytesCoder")
             .field("urn", &Self::get_coder_urn())
             .finish()
-    }
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub struct KV<K, V> {
-    k: K,
-    v: V,
-}
-
-impl<K, V> KV<K, V>
-where
-    K: Clone + fmt::Debug + Send,
-    V: Clone + fmt::Debug + Send,
-{
-    pub fn new(k: K, v: V) -> Self {
-        KV { k, v }
-    }
-
-    pub fn as_values(&self) -> &V {
-        &self.v
     }
 }
 

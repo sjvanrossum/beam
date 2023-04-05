@@ -122,7 +122,7 @@ where
         },
         PType::PValueArr => {
             // TODO: Remove this hack, PValues can have multiple ids.
-            for (i, id) in pvalue.get_id().split(",").enumerate() {
+            for (i, id) in pvalue.get_id().split(',').enumerate() {
                 result.insert(i.to_string(), id.to_string());
             }
         }

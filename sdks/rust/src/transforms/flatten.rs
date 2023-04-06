@@ -36,7 +36,7 @@ impl Flatten {
 impl<E: ElemType> PTransform<E, E> for Flatten {
     fn expand_internal(
         &self,
-        input: &PValue<E>,
+        _input: &PValue<E>,
         pipeline: Arc<Pipeline>,
         transform_proto: &mut proto_pipeline::PTransform,
     ) -> PValue<E> {

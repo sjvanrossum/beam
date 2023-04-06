@@ -67,7 +67,7 @@ pub struct Pipeline {
     coder_proto_counter: Mutex<usize>,
 }
 
-impl<'a> Pipeline {
+impl Pipeline {
     pub fn new(component_prefix: String) -> Self {
         let proto = proto_pipeline::Pipeline {
             components: Some(proto_pipeline::Components {
@@ -257,7 +257,7 @@ impl<'a> Pipeline {
             .as_mut()
             .unwrap()
             .transforms
-            .insert(transform_id.clone(), transform_proto.clone());
+            .insert(transform_id, transform_proto.clone());
         drop(pipeline_proto);
 
         // TODO: ensure this happens even if an error takes place above

@@ -53,7 +53,8 @@ mod tests {
             .await;
     }
 
-    //#[tokio::test]
+    #[tokio::test]
+    #[ignore]
     #[should_panic]
     async fn ensure_assert_fails_on_empty() {
         DirectRunner::new()
@@ -84,7 +85,7 @@ mod tests {
                     KV::new("a".to_string(), 2),
                     KV::new("b".to_string(), 3),
                 ]))
-                .apply(GroupByKey::new())
+                .apply(GroupByKey::default())
                 .apply(AssertEqualUnordered::new(&[
                     KV::new("a".to_string(), vec![1, 2]),
                     KV::new("b".to_string(), vec![3]),
@@ -99,7 +100,7 @@ mod tests {
             .run(|root| {
                 let first = root.clone().apply(Create::new(&[1, 2, 3]));
                 let second = root.apply(Create::new(&[100, 200]));
-                PValue::new_array(&vec![first, second])
+                PValue::new_array(&[first, second])
                     .apply(Flatten::new())
                     .apply(AssertEqualUnordered::new(&[1, 2, 3, 100, 200]))
             })
@@ -109,7 +110,7 @@ mod tests {
     #[tokio::test]
     async fn run_impulse_expansion() {
         let p = Arc::new(Pipeline::default());
-        let root = PValue::new_root(p.clone());
+        let root = PValue::new_root(p);
 
         let pcoll = root.apply(Impulse::new());
 

@@ -43,11 +43,11 @@ static OPERATORS_BY_URN: Lazy<Mutex<OperatorMap>> = Lazy::new(|| {
         // Test operators
         (urns::CREATE_URN, OperatorDiscriminants::Create),
         (urns::RECORDING_URN, OperatorDiscriminants::Recording),
-        (urns::PARTITION_URN, OperatorDiscriminants::Partitioning),
+        (urns::PARTITION_URN, OperatorDiscriminants::_Partitioning),
         (urns::IMPULSE_URN, OperatorDiscriminants::Impulse),
         (urns::GROUP_BY_KEY_URN, OperatorDiscriminants::GroupByKey),
         // Production operators
-        (urns::DATA_INPUT_URN, OperatorDiscriminants::DataSource),
+        (urns::DATA_INPUT_URN, OperatorDiscriminants::_DataSource),
         (urns::PAR_DO_URN, OperatorDiscriminants::ParDo),
         (urns::FLATTEN_URN, OperatorDiscriminants::Flatten),
     ]);
@@ -55,7 +55,7 @@ static OPERATORS_BY_URN: Lazy<Mutex<OperatorMap>> = Lazy::new(|| {
     Mutex::new(m)
 });
 
-pub trait OperatorI {
+pub(crate) trait OperatorI {
     fn new(
         transform_id: Arc<String>,
         transform: Arc<PTransform>,
@@ -75,16 +75,16 @@ pub trait OperatorI {
 }
 
 #[derive(fmt::Debug, EnumDiscriminants)]
-pub enum Operator {
+pub(crate) enum Operator {
     // Test operators
     Create(CreateOperator),
     Recording(RecordingOperator),
-    Partitioning,
+    _Partitioning,
     GroupByKey(GroupByKeyWithinBundleOperator),
     Impulse(ImpulsePerBundleOperator),
 
     // Production operators
-    DataSource,
+    _DataSource,
     ParDo(ParDoOperator),
     Flatten(FlattenOperator),
 }
@@ -156,7 +156,7 @@ impl OperatorI for Operator {
     }
 }
 
-pub fn create_operator(transform_id: &str, context: Arc<OperatorContext>) -> Operator {
+pub(crate) fn create_operator(transform_id: &str, context: Arc<OperatorContext>) -> Operator {
     let descriptor: &ProcessBundleDescriptor = context.descriptor.as_ref();
 
     let transform = descriptor
@@ -228,7 +228,7 @@ pub struct Receiver {
 }
 
 impl Receiver {
-    pub fn new(operators: Vec<Arc<Operator>>) -> Self {
+    pub(crate) fn new(operators: Vec<Arc<Operator>>) -> Self {
         Receiver { operators }
     }
 
@@ -427,10 +427,10 @@ pub struct ImpulsePerBundleOperator {
 
 impl OperatorI for ImpulsePerBundleOperator {
     fn new(
-        transform_id: Arc<String>,
+        _transform_id: Arc<String>,
         transform: Arc<PTransform>,
         context: Arc<OperatorContext>,
-        operator_discriminant: OperatorDiscriminants,
+        _operator_discriminant: OperatorDiscriminants,
     ) -> Self {
         let receivers = transform
             .outputs
@@ -451,12 +451,12 @@ impl OperatorI for ImpulsePerBundleOperator {
         }
     }
 
-    fn process(&self, value: &WindowedValue) {}
+    fn process(&self, _value: &WindowedValue) {}
 
     fn finish_bundle(&self) {}
 }
 
-struct GroupByKeyWithinBundleOperator {
+pub(crate) struct GroupByKeyWithinBundleOperator {
     receivers: Vec<Arc<Receiver>>,
     key_extractor: &'static Box<dyn serialize::KeyExtractor>,
     // TODO: Operator requiring locking for structures only ever manipulated in
@@ -466,10 +466,10 @@ struct GroupByKeyWithinBundleOperator {
 
 impl OperatorI for GroupByKeyWithinBundleOperator {
     fn new(
-        transform_id: Arc<String>,
+        _transform_id: Arc<String>,
         transform_proto: Arc<PTransform>,
         context: Arc<OperatorContext>,
-        operator_discriminant: OperatorDiscriminants,
+        _operator_discriminant: OperatorDiscriminants,
     ) -> Self {
         // TODO: Shared by all operators, move up?
         let receivers = transform_proto
@@ -530,10 +530,10 @@ impl std::fmt::Debug for GroupByKeyWithinBundleOperator {
 // ******* Production Operator definitions *******
 
 pub struct ParDoOperator {
-    transform_id: Arc<String>,
-    transform: Arc<PTransform>,
-    context: Arc<OperatorContext>,
-    operator_discriminant: OperatorDiscriminants,
+    _transform_id: Arc<String>,
+    _transform: Arc<PTransform>,
+    _context: Arc<OperatorContext>,
+    _operator_discriminant: OperatorDiscriminants,
 
     receivers: Vec<Arc<Receiver>>,
     dofn: &'static serialize::GenericDoFn,
@@ -562,10 +562,10 @@ impl OperatorI for ParDoOperator {
         .unwrap();
 
         Self {
-            transform_id,
-            transform: transform_proto,
-            context,
-            operator_discriminant,
+            _transform_id: transform_id,
+            _transform: transform_proto,
+            _context: context,
+            _operator_discriminant: operator_discriminant,
             receivers,
             dofn,
         }
@@ -599,10 +599,10 @@ pub struct FlattenOperator {
 
 impl OperatorI for FlattenOperator {
     fn new(
-        transform_id: Arc<String>,
+        _transform_id: Arc<String>,
         transform: Arc<PTransform>,
         context: Arc<OperatorContext>,
-        operator_discriminant: OperatorDiscriminants,
+        _operator_discriminant: OperatorDiscriminants,
     ) -> Self {
         let receivers = transform
             .outputs

@@ -25,9 +25,7 @@ pub fn deserialize_fn<T: Any + Sync + Send>(name: &String) -> Option<&'static T>
         None => None,
     };
 
-    unsafe {
-        return std::mem::transmute::<Option<&T>, Option<&'static T>>(typed);
-    }
+    unsafe { std::mem::transmute::<Option<&T>, Option<&'static T>>(typed) }
 }
 
 // ******* DoFn Wrappers, perhaps move elsewhere? *******
@@ -37,7 +35,7 @@ pub type GenericDoFn =
     Box<dyn Fn(&dyn Any) -> Box<dyn Iterator<Item = Box<dyn Any>>> + Send + Sync>;
 
 struct GenericDoFnWrapper {
-    func: GenericDoFn,
+    _func: GenericDoFn,
 }
 
 unsafe impl std::marker::Send for GenericDoFnWrapper {}
@@ -51,9 +49,9 @@ impl<O: Any, I: IntoIterator<Item = O>> Iterator for BoxedIter<O, I> {
 
     fn next(&mut self) -> Option<Box<dyn Any>> {
         if let Some(x) = self.typed_iter.next() {
-            return Some(Box::new(x));
+            Some(Box::new(x))
         } else {
-            return None;
+            None
         }
     }
 }
@@ -88,7 +86,7 @@ pub trait KeyExtractor: Sync + Send {
     fn extract(&self, kv: &dyn Any) -> (String, Box<dyn Any + Sync + Send>);
     fn recombine(
         &self,
-        key: &String,
+        key: &str,
         values: &Box<Vec<Box<dyn Any + Sync + Send>>>,
     ) -> Box<dyn Any + Sync + Send>;
 }
@@ -97,8 +95,8 @@ pub struct TypedKeyExtractor<V: Clone + Sync + Send + 'static> {
     phantom_data: PhantomData<V>,
 }
 
-impl<V: Clone + Sync + Send + 'static> TypedKeyExtractor<V> {
-    pub fn default() -> Self {
+impl<V: Clone + Sync + Send + 'static> Default for TypedKeyExtractor<V> {
+    fn default() -> Self {
         Self {
             phantom_data: PhantomData,
         }
@@ -108,17 +106,17 @@ impl<V: Clone + Sync + Send + 'static> TypedKeyExtractor<V> {
 impl<V: Clone + Sync + Send + 'static> KeyExtractor for TypedKeyExtractor<V> {
     fn extract(&self, kv: &dyn Any) -> (String, Box<dyn Any + Sync + Send>) {
         let typed_kv = kv.downcast_ref::<(String, V)>().unwrap();
-        return (typed_kv.0.clone(), Box::new(typed_kv.1.clone()));
+        (typed_kv.0.clone(), Box::new(typed_kv.1.clone()))
     }
     fn recombine(
         &self,
-        key: &String,
+        key: &str,
         values: &Box<Vec<Box<dyn Any + Sync + Send>>>,
     ) -> Box<dyn Any + Sync + Send> {
         let mut typed_values: Vec<V> = Vec::new();
         for untyped_value in values.iter() {
             typed_values.push(untyped_value.downcast_ref::<V>().unwrap().clone());
         }
-        return Box::new((key.clone(), typed_values));
+        Box::new((key.to_string(), typed_values))
     }
 }

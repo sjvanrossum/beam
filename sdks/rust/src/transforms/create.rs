@@ -46,8 +46,8 @@ impl<E: ElemType> PTransform<Never, E> for Create<E> {
         input
             .clone()
             .apply(Impulse::new())
-            .apply(ParDo::from_dyn_flat_map(Box::new(move |_x| -> Vec<E> {
-                elements.to_vec()
-            })))
+            .apply(ParDo::from_flatmap_with_context(Box::new(
+                move |_x| -> Vec<E> { elements.to_vec() },
+            )))
     }
 }

@@ -18,6 +18,8 @@
 
 use std::sync::Arc;
 
+use crate::coders::required_coders::BytesCoder;
+use crate::coders::Coder;
 use crate::internals::pipeline::Pipeline;
 use crate::internals::pvalue::{PTransform, PValue};
 use crate::internals::urns::IMPULSE_URN;
@@ -51,13 +53,7 @@ impl PTransform<Never, Vec<u8>> for Impulse {
         transform_proto.spec = Some(spec);
 
         pipeline.create_pcollection_internal(
-            pipeline.register_coder_proto(proto_pipeline::Coder {
-                spec: Some(proto_pipeline::FunctionSpec {
-                    urn: String::from(crate::coders::urns::BYTES_CODER_URN),
-                    payload: Vec::with_capacity(0),
-                }),
-                component_coder_ids: Vec::with_capacity(0),
-            }),
+            pipeline.register_coder_proto(BytesCoder::default().to_proto()),
             pipeline.clone(),
         )
     }

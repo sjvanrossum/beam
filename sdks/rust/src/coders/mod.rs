@@ -26,8 +26,32 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 /// This is the base interface for coders, which are responsible in Apache Beam to encode and decode
-///  elements of a PCollection.
-pub trait CoderI: fmt::Debug + Default {
+/// elements of a PCollection.
+///
+/// # Example
+///
+/// ```
+/// use apache_beam::coders::{Coder, standard_coders::StrUtf8Coder, Context};
+/// use bytes::buf::BufMut;
+/// use std::io::Write;
+///
+/// let coder = StrUtf8Coder::default();
+///
+/// let mut w1 = vec![].writer();
+/// coder
+///     .encode("my string".to_string(), &mut w1, &Context::WholeStream)
+///     .unwrap();
+/// w1.flush().unwrap();
+/// println!("{:?}", w1.into_inner()); // <= Prints the pure byte-encoding of the string
+///
+/// let mut w2 = vec![].writer();
+/// coder
+///     .encode("my string".to_string(), &mut w2, &Context::NeedsDelimiters)
+///     .unwrap();
+/// w2.flush().unwrap();
+/// println!("{:?}", w2.into_inner()); // <= Prints a length-prefix string of bytes
+/// ```
+pub trait Coder: fmt::Debug + Default {
     /// The type of the elements to be encoded/decoded.
     type E;
 

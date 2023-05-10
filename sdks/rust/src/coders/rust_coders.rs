@@ -21,14 +21,14 @@ use std::marker::PhantomData;
 
 use crate::coders::standard_coders::*;
 use crate::coders::urns::*;
-use crate::coders::CoderI;
+use crate::coders::Coder;
 
 #[derive(Eq, PartialEq)]
 pub struct GeneralObjectCoder<T> {
     phantom: PhantomData<T>,
 }
 
-impl CoderI for GeneralObjectCoder<String> {
+impl Coder for GeneralObjectCoder<String> {
     type E = String;
 
     fn get_coder_urn() -> &'static str {

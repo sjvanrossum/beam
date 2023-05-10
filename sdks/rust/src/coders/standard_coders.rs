@@ -34,13 +34,13 @@ use integer_encoding::{VarInt, VarIntReader, VarIntWriter};
 
 use crate::coders::required_coders::BytesCoder;
 use crate::coders::urns::*;
-use crate::coders::{CoderI, Context};
+use crate::coders::{Coder, Context};
 
 #[derive(Clone, Default)]
 pub struct StrUtf8Coder {}
 
 // TODO: accept string references as well?
-impl CoderI for StrUtf8Coder {
+impl Coder for StrUtf8Coder {
     type E = String;
 
     fn get_coder_urn() -> &'static str {
@@ -90,7 +90,7 @@ pub struct VarIntCoder<N: fmt::Debug + VarInt> {
 
 // TODO: passes tests for -1 if it gets casted to u64 and encoded as such.
 // Revisit this later
-impl<N> CoderI for VarIntCoder<N>
+impl<N> Coder for VarIntCoder<N>
 where
     N: fmt::Debug + VarInt,
 {

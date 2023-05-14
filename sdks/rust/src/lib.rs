@@ -16,6 +16,8 @@
  * limitations under the License.
  */
 
+#[forbid(unsafe_code)]
+
 #[macro_use]
 pub mod coders;
 

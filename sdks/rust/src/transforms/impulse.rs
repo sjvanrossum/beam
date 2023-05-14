@@ -53,7 +53,7 @@ impl PTransform<Never, Vec<u8>> for Impulse {
         transform_proto.spec = Some(spec);
 
         pipeline.create_pcollection_internal(
-            pipeline.register_coder_proto(BytesCoder::default().to_proto()),
+            pipeline.register_coder_proto(BytesCoder::default().to_proto(vec![])),
             pipeline.clone(),
         )
     }

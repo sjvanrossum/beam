@@ -5,7 +5,7 @@ use std::fmt;
 use crate::{coders::required_coders::Iterable, elem_types::kv::KV};
 
 /// Element types used in Beam pipelines (including PTransforms, PCollections, Coders, etc.)
-pub trait ElemType: Clone + Send + Sync + 'static {}
+pub trait ElemType: Send + Sync + 'static {}
 
 impl ElemType for Vec<u8> {}
 

@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::proto::beam_api::{fn_execution::ProcessBundleDescriptor, pipeline as proto_pipeline};
+use crate::proto::{fn_execution_v1, pipeline_v1};
 use crate::worker::sdk_worker::BundleProcessor;
 
 use crate::runners::runner::RunnerI;
@@ -33,8 +33,8 @@ impl RunnerI for DirectRunner {
         Self
     }
 
-    async fn run_pipeline(&self, pipeline: Arc<std::sync::Mutex<proto_pipeline::Pipeline>>) {
-        let descriptor: ProcessBundleDescriptor;
+    async fn run_pipeline(&self, pipeline: Arc<std::sync::Mutex<pipeline_v1::Pipeline>>) {
+        let descriptor: fn_execution_v1::ProcessBundleDescriptor;
         {
             let p = pipeline.lock().unwrap();
 
@@ -42,7 +42,7 @@ impl RunnerI for DirectRunner {
             // let proto = rewrite_side_inputs(pipeline, state_cache_ref);
 
             // TODO: review cloning
-            descriptor = ProcessBundleDescriptor {
+            descriptor = fn_execution_v1::ProcessBundleDescriptor {
                 id: "".to_string(),
                 transforms: p
                     .components

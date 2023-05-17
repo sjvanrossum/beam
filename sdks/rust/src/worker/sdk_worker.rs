@@ -16,16 +16,15 @@
  * limitations under the License.
  */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::{Arc, Mutex, RwLock};
 
+use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 use tonic::codegen::InterceptedService;
-use tonic::metadata::{Ascii, MetadataValue};
-use tonic::service::Interceptor;
-use tonic::transport::{Channel, Uri};
+use tonic::transport::Channel;
 use tonic::Status;
 
 use crate::proto::{
@@ -34,27 +33,8 @@ use crate::proto::{
     fn_execution_v1::instruction_response as instruction_response_v1, pipeline_v1,
 };
 
+use crate::worker::interceptors::WorkerIdInterceptor;
 use crate::worker::operators::{create_operator, Operator, OperatorContext, OperatorI, Receiver};
-
-#[derive(Clone)]
-struct WorkerIdInterceptor {
-    id: MetadataValue<Ascii>,
-}
-
-impl WorkerIdInterceptor {
-    fn new(id: String) -> Self {
-        Self {
-            id: id.parse().unwrap(),
-        }
-    }
-}
-
-impl Interceptor for WorkerIdInterceptor {
-    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
-        request.metadata_mut().insert("worker_id", self.id.clone());
-        Ok(request)
-    }
-}
 
 type BundleDescriptorId = String;
 type InstructionId = String;
@@ -63,6 +43,7 @@ type InstructionId = String;
 // Using concurrent caches removes the need to synchronize on the worker instance in every context.
 #[derive(Debug)]
 pub struct Worker {
+    _id: String,
     // Cheap and safe to clone
     control_client: beam_fn_control_client_v1::BeamFnControlClient<
         InterceptedService<Channel, WorkerIdInterceptor>,
@@ -73,39 +54,38 @@ pub struct Worker {
     // Cheap and safe to clone
     process_bundle_descriptors:
         moka::future::Cache<BundleDescriptorId, Arc<fn_execution_v1::ProcessBundleDescriptor>>,
-    _bundle_processors: HashMap<String, BundleProcessor>,
-    _active_bundle_processors: HashMap<String, BundleProcessor>,
-    _id: String,
-    _endpoints: WorkerEndpoints,
+    _bundle_processors: DashMap<String, BundleProcessor>,
+    _active_bundle_processors: DashMap<String, BundleProcessor>,
     _options: HashMap<String, String>,
 }
 
 impl Worker {
     // concurrent data structures and/or finer grained locks.
-    pub async fn new(id: String, endpoints: WorkerEndpoints) -> Self {
-        // TODO: parse URIs in the endpoint struct
-        let channel = Channel::builder(endpoints.get_endpoint().parse::<Uri>().unwrap())
-            .connect()
-            .await
-            .expect("Failed to connect to control service");
-        let client = beam_fn_control_client_v1::BeamFnControlClient::with_interceptor(
-            channel,
+    pub fn try_new(
+        id: String,
+        control_endpoint: String,
+        _logging_endpoint: String,
+        _status_endpoint: Option<String>,
+        _options: serde_json::Value,
+        _runner_capabilities: HashSet<String>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let control_client = beam_fn_control_client_v1::BeamFnControlClient::with_interceptor(
+            Channel::from_shared(control_endpoint)?.connect_lazy(),
             WorkerIdInterceptor::new(id.clone()),
         );
-        let (tx, rx) = mpsc::channel::<fn_execution_v1::InstructionResponse>(100);
+        let (control_tx, control_rx) = mpsc::channel(100);
 
-        Self {
-            control_client: client,
-            control_tx: tx,
-            control_rx: Arc::new(TokioMutex::new(rx)),
+        Ok(Self {
+            _id: id,
+            control_client,
+            control_tx,
+            control_rx: Arc::new(TokioMutex::new(control_rx)),
             // TODO(sjvanrossum): Maybe define the eviction policy
             process_bundle_descriptors: moka::future::Cache::builder().build(),
-            _bundle_processors: HashMap::new(),
-            _active_bundle_processors: HashMap::new(),
-            _id: id,
-            _endpoints: endpoints,
+            _bundle_processors: DashMap::new(),
+            _active_bundle_processors: DashMap::new(),
             _options: HashMap::new(),
-        }
+        })
     }
 
     pub async fn start(&mut self) -> Result<(), Box<dyn Error>> {
@@ -260,23 +240,6 @@ impl Worker {
             response: None,
         })
         .await
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct WorkerEndpoints {
-    control_endpoint_url: Option<String>,
-}
-
-impl WorkerEndpoints {
-    pub fn new(control_endpoint_url: Option<String>) -> Self {
-        Self {
-            control_endpoint_url,
-        }
-    }
-
-    pub fn get_endpoint(&self) -> &str {
-        self.control_endpoint_url.as_ref().unwrap()
     }
 }
 

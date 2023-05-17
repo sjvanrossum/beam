@@ -18,6 +18,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +32,7 @@ use crate::proto::{
     fn_execution_v1,
     fn_execution_v1::beam_fn_external_worker_pool_server as beam_fn_external_worker_pool_server_v1,
 };
-use crate::worker::sdk_worker::{Worker, WorkerEndpoints};
+use crate::worker::sdk_worker::Worker;
 
 #[derive(Debug)]
 struct BeamFnExternalWorkerPoolV1Service {
@@ -51,11 +52,19 @@ impl beam_fn_external_worker_pool_server_v1::BeamFnExternalWorkerPool
         // Avoid creating duplicate workers
         if let Entry::Vacant(entry) = self.workers.write().await.entry(req.worker_id.clone()) {
             let worker = Arc::new(Mutex::new(
-                Worker::new(
+                Worker::try_new(
                     entry.key().clone(),
-                    WorkerEndpoints::new(req.control_endpoint.map(|descriptor| descriptor.url)),
+                    req.control_endpoint
+                        .map(|descriptor| descriptor.url)
+                        .unwrap(),
+                    req.logging_endpoint
+                        .map(|descriptor| descriptor.url)
+                        .unwrap(),
+                    None,
+                    serde_json::Value::default(),
+                    HashSet::default(),
                 )
-                .await,
+                .unwrap(),
             ));
             let inserted_worker = entry.insert(worker).clone();
 

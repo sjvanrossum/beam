@@ -1,47 +1,33 @@
-use std::fmt;
+mod custom_coder_from_urn;
+pub use custom_coder_from_urn::{CustomCoderFromUrn, CUSTOM_CODER_FROM_URN};
 
-use once_cell::sync::OnceCell;
+use crate::worker::coder_from_urn::preset_coder_from_urn::PresetCoderFromUrn;
 
-use crate::coders::{DecodeFromUrnFn, EncodeFromUrnFn};
+mod preset_coder_from_urn;
 
-/// Called internally from `register_coders!` macro.
-pub static CODER_FROM_URN: OnceCell<CoderFromUrn> = OnceCell::new();
-
-/// Called internally from `register_coders!` macro.
-pub struct CoderFromUrn {
-    pub enc: EncodeFromUrnFn,
-    pub dec: DecodeFromUrnFn,
-}
+pub(in crate::worker) struct CoderFromUrn;
 
 impl CoderFromUrn {
-    pub fn global() -> &'static CoderFromUrn {
-        CODER_FROM_URN
-            .get()
-            .expect("you might forget calling `register_coders!(CustomCoder1, CustomCoder2)`")
-    }
-
-    pub fn encode_from_urn(
-        &self,
+    pub(in crate::worker) fn encode_from_urn(
         urn: &str,
         elem: &dyn crate::elem_types::ElemType,
         writer: &mut dyn std::io::Write,
         context: &crate::coders::Context,
     ) -> Result<usize, std::io::Error> {
-        (self.enc)(urn, elem, writer, context)
+        PresetCoderFromUrn::encode_from_urn(urn, elem, writer, context).unwrap_or_else(|| {
+            let custom = CustomCoderFromUrn::global();
+            (custom.enc)(urn, elem, writer, context)
+        })
     }
 
-    pub fn decode_from_urn(
-        &self,
+    pub(in crate::worker) fn decode_from_urn(
         urn: &str,
         reader: &mut dyn std::io::Read,
         context: &crate::coders::Context,
     ) -> Result<Box<dyn crate::elem_types::ElemType>, std::io::Error> {
-        (self.dec)(urn, reader, context)
-    }
-}
-
-impl fmt::Debug for CoderFromUrn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CodersFromUrn").finish()
+        PresetCoderFromUrn::decode_from_urn(urn, reader, context).unwrap_or_else(|| {
+            let custom = CustomCoderFromUrn::global();
+            (custom.dec)(urn, reader, context)
+        })
     }
 }

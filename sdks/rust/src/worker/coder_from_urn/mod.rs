@@ -1,11 +1,12 @@
 mod custom_coder_from_urn;
+
 pub use custom_coder_from_urn::{CustomCoderFromUrn, CUSTOM_CODER_FROM_URN};
 
 use crate::worker::coder_from_urn::preset_coder_from_urn::PresetCoderFromUrn;
 
 mod preset_coder_from_urn;
 
-pub(in crate::worker) struct CoderFromUrn;
+pub(crate) struct CoderFromUrn;
 
 impl CoderFromUrn {
     pub(in crate::worker) fn encode_from_urn(

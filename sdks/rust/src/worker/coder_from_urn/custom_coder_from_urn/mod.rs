@@ -42,6 +42,6 @@ impl CustomCoderFromUrn {
 
 impl fmt::Debug for CustomCoderFromUrn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CodersFromUrn").finish()
+        f.debug_struct("CustomCoderFromUrn").finish()
     }
 }

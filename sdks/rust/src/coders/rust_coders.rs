@@ -16,6 +16,9 @@
  * limitations under the License.
  */
 
+mod unit_coder;
+pub use unit_coder::UnitCoder;
+
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -60,6 +63,10 @@ impl Coder for GeneralObjectCoder<String> {
         }
 
         StrUtf8Coder::default().decode(reader, context)
+    }
+
+    fn component_coder_urns() -> Vec<super::CoderUrnTree> {
+        vec![]
     }
 }
 

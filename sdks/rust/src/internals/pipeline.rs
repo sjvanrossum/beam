@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use crate::coders::CoderUrnTree;
 use crate::elem_types::ElemType;
 use crate::proto::pipeline_v1;
 
@@ -60,8 +61,6 @@ impl PipelineContext {
 /// Corresponds to the `Pipeline` in Runner API's proto.
 ///
 /// The pipeline is instantiated on `Runner::run()`, and used by a (remote or direct) runner.
-///
-// TODO: move coders to PipelineContext
 pub struct Pipeline {
     context: PipelineContext,
     default_environment: String,
@@ -102,8 +101,36 @@ impl Pipeline {
         self.proto.clone()
     }
 
-    // TODO: review need for separate function vs register_coder
-    pub fn register_coder_proto(&self, coder_proto: pipeline_v1::Coder) -> String {
+    /// Recursively construct a coder (and its component coders) in protocol buffer representation for the Runner API.
+    /// A coder in protobuf format can be shared with other components such as Beam runners,
+    /// SDK workers; and reconstructed into its runtime representation if necessary.
+    fn coder_to_proto(&self, coder_urn_tree: &CoderUrnTree) -> pipeline_v1::Coder {
+        fn helper(coder_urn: &str, component_coder_ids: Vec<String>) -> pipeline_v1::Coder {
+            let spec = pipeline_v1::FunctionSpec {
+                urn: coder_urn.to_string(),
+                payload: vec![], // unused in Rust SDK
+            };
+            pipeline_v1::Coder {
+                spec: Some(spec),
+                component_coder_ids,
+            }
+        }
+
+        let component_coder_ids = coder_urn_tree
+            .component_coder_urns
+            .iter()
+            .map(|component_coder_urn| {
+                let coder_proto = self.coder_to_proto(component_coder_urn);
+                self.get_coder_id(coder_proto)
+            })
+            .collect();
+
+        helper(coder_urn_tree.coder_urn, component_coder_ids)
+    }
+
+    /// If the `coder_proto` is already registered, return its ID.
+    /// Else, the `coder_proto` is registered and its newly-created ID is returned.
+    fn get_coder_id(&self, coder_proto: pipeline_v1::Coder) -> String {
         let mut pipeline_proto = self.proto.lock().unwrap();
 
         let proto_coders = &mut pipeline_proto.components.as_mut().unwrap().coders;
@@ -214,11 +241,14 @@ impl Pipeline {
         (transform_id, transform_proto)
     }
 
-    pub fn apply_transform<In, Out, F>(
+    pub(crate) fn apply_transform<In, Out, F>(
         &self,
         transform: F,
         input: &PValue<In>,
         pipeline: Arc<Pipeline>,
+
+        // Coder's URN that encode/decode `Out`.
+        out_coder_urn: &CoderUrnTree,
     ) -> PValue<Out>
     where
         In: ElemType,
@@ -236,7 +266,7 @@ impl Pipeline {
             drop(transform_stack);
         }
 
-        let result = transform.expand_internal(input, pipeline, &mut transform_proto);
+        let result = transform.expand(input, pipeline, out_coder_urn, &mut transform_proto);
 
         for (name, id) in flatten_pvalue(&result, None) {
             // Causes test to hang...
@@ -290,22 +320,28 @@ impl Pipeline {
         result
     }
 
-    pub fn create_pcollection_internal<Out>(
+    pub(crate) fn create_pcollection_internal<Out>(
         &self,
-        coder_id: String,
+        coder_urn_tree: &CoderUrnTree,
         pipeline: Arc<Pipeline>,
     ) -> PValue<Out>
     where
         Out: ElemType,
     {
+        let coder_id = {
+            let coder_proto = self.coder_to_proto(coder_urn_tree);
+            self.get_coder_id(coder_proto)
+        };
+
         PValue::new(
             crate::internals::pvalue::PType::PCollection,
             pipeline,
             self.create_pcollection_id_internal(coder_id),
+            coder_urn_tree.coder_urn.to_string(),
         )
     }
 
-    pub fn create_pcollection_id_internal(&self, coder_id: String) -> String {
+    fn create_pcollection_id_internal(&self, coder_id: String) -> String {
         let pcoll_id = self.context.create_unique_name("pc".to_string());
         let pcoll_proto: pipeline_v1::PCollection = pipeline_v1::PCollection {
             unique_name: pcoll_id.clone(),
@@ -328,5 +364,59 @@ impl Pipeline {
 impl Default for Pipeline {
     fn default() -> Self {
         Self::new("".to_string())
+    }
+}
+
+impl Pipeline {
+    #[cfg(test)]
+    pub(crate) fn coder_to_proto_test_wrapper(
+        &self,
+        coder_urn_tree: &CoderUrnTree,
+    ) -> pipeline_v1::Coder {
+        self.coder_to_proto(coder_urn_tree)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        coders::{
+            required_coders::BytesCoder,
+            urns::{BYTES_CODER_URN, ITERABLE_CODER_URN},
+        },
+        transforms::impulse::Impulse,
+    };
+
+    use super::*;
+
+    fn coder_urn_from_pvalue<E: ElemType>(pvalue: &PValue<E>) -> String {
+        let pcoll_id = pvalue.get_id();
+
+        let pipeline_proto = pvalue.get_pipeline_arc().get_proto();
+        let pipeline_proto = pipeline_proto.lock().unwrap();
+
+        let components = pipeline_proto.components.as_ref().unwrap();
+        let pcoll = components.pcollections.get(&pcoll_id).unwrap();
+        let coder_id = &pcoll.coder_id;
+        let coder = components.coders.get(coder_id).unwrap();
+        coder.spec.as_ref().unwrap().urn.to_string()
+    }
+
+    #[test]
+    fn test_default_coder_in_proto() {
+        let root = PValue::<()>::root();
+        let pvalue = root.apply(Impulse::new());
+
+        let coder_urn = coder_urn_from_pvalue(&pvalue);
+        assert_eq!(coder_urn, ITERABLE_CODER_URN);
+    }
+
+    #[test]
+    fn test_override_coder_in_proto() {
+        let root = PValue::<()>::root();
+        let pvalue = root.apply_with_coder::<BytesCoder, _, _>(Impulse::new());
+
+        let coder_urn = coder_urn_from_pvalue(&pvalue);
+        assert_eq!(coder_urn, BYTES_CODER_URN);
     }
 }

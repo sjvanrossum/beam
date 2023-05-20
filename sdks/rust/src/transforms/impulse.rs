@@ -18,9 +18,7 @@
 
 use std::sync::Arc;
 
-use crate::coders::required_coders::BytesCoder;
-use crate::coders::Coder;
-
+use crate::coders::CoderUrnTree;
 use crate::internals::pipeline::Pipeline;
 use crate::internals::pvalue::{PTransform, PValue};
 use crate::internals::urns::IMPULSE_URN;
@@ -41,6 +39,7 @@ impl PTransform<(), Vec<u8>> for Impulse {
         &self,
         _input: &PValue<()>,
         pipeline: Arc<Pipeline>,
+        coder_urn: &CoderUrnTree,
         transform_proto: &mut pipeline_v1::PTransform,
     ) -> PValue<Vec<u8>> {
         let spec = pipeline_v1::FunctionSpec {
@@ -49,10 +48,7 @@ impl PTransform<(), Vec<u8>> for Impulse {
         };
         transform_proto.spec = Some(spec);
 
-        pipeline.create_pcollection_internal(
-            pipeline.register_coder_proto(BytesCoder::default().to_proto(vec![])),
-            pipeline.clone(),
-        )
+        pipeline.create_pcollection_internal(coder_urn, pipeline.clone())
     }
 }
 

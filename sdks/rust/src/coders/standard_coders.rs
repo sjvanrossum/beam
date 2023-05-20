@@ -27,6 +27,9 @@
 //! The formal specifications for these coders can be found in
 //! model/pipeline/src/main/proto/beam_runner_api.proto
 
+mod nullable_coder;
+pub use nullable_coder::NullableCoder;
+
 use std::fmt;
 use std::io::{self, ErrorKind, Read, Write};
 
@@ -80,6 +83,10 @@ impl Coder for StrUtf8Coder {
             )),
         }
     }
+
+    fn component_coder_urns() -> Vec<super::CoderUrnTree> {
+        vec![]
+    }
 }
 
 impl fmt::Debug for StrUtf8Coder {
@@ -127,6 +134,10 @@ where
     ) -> Result<Box<dyn ElemType>, io::Error> {
         let element: N = reader.read_varint()?;
         Ok(Box::new(element))
+    }
+
+    fn component_coder_urns() -> Vec<super::CoderUrnTree> {
+        vec![]
     }
 }
 

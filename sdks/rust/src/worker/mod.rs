@@ -20,7 +20,7 @@ mod external_worker_service;
 pub mod operators;
 
 mod coder_from_urn;
-pub(in crate::worker) use coder_from_urn::CoderFromUrn;
+pub(crate) use coder_from_urn::CoderFromUrn;
 pub use coder_from_urn::{CustomCoderFromUrn, CUSTOM_CODER_FROM_URN};
 
 mod interceptors;
@@ -150,13 +150,14 @@ mod serde_preset_coder_test {
     mod sdk_launcher {
         use crate::{
             coders::{standard_coders::StrUtf8Coder, Coder},
+            internals::pipeline::Pipeline,
             proto::pipeline::v1 as pipeline_v1,
         };
 
         pub fn launcher_register_coder_proto() -> pipeline_v1::Coder {
             // in the proto registration (in the pipeline construction)
-            let coder = StrUtf8Coder::default();
-            coder.to_proto(vec![])
+            let p = Pipeline::new("".to_string());
+            p.coder_to_proto_test_wrapper(&StrUtf8Coder::coder_urn_tree())
         }
     }
 
@@ -213,7 +214,10 @@ mod serde_preset_coder_test {
             let encoded_element = encode_element(&element, &coder);
             let decoded_element_dyn = decode_element(&mut encoded_element.reader(), &coder);
 
-            let decoded_element = decoded_element_dyn.as_any().downcast_ref::<String>().unwrap();
+            let decoded_element = decoded_element_dyn
+                .as_any()
+                .downcast_ref::<String>()
+                .unwrap();
 
             assert_eq!(decoded_element, &element);
         }
@@ -229,8 +233,9 @@ mod serde_preset_coder_test {
 mod serde_costom_coder_test {
     mod sdk_launcher {
         use crate::{
-            coders::{Coder, Context},
+            coders::{Coder, CoderUrnTree, Context},
             elem_types::ElemType,
+            internals::pipeline::Pipeline,
             proto::pipeline::v1 as pipeline_v1,
             register_coders,
         };
@@ -273,14 +278,18 @@ mod serde_costom_coder_test {
                     some_field: element.to_string(),
                 }))
             }
+
+            fn component_coder_urns() -> Vec<CoderUrnTree> {
+                vec![]
+            }
         }
 
         register_coders!(MyCoder);
 
         pub fn launcher_register_coder_proto() -> pipeline_v1::Coder {
             // in the proto registration (in the pipeline construction)
-            let my_coder = MyCoder::default();
-            my_coder.to_proto(vec![])
+            let p = Pipeline::new("".to_string());
+            p.coder_to_proto_test_wrapper(&MyCoder::coder_urn_tree())
         }
     }
 

@@ -19,7 +19,7 @@
 use super::impulse::Impulse;
 use super::pardo::ParDo;
 use crate::{
-    elem_types::ElemType,
+    elem_types::{DefaultCoder, ElemType},
     internals::pvalue::{PTransform, PValue},
 };
 
@@ -33,8 +33,17 @@ impl<Out: ElemType> Create<Out> {
     }
 }
 
-impl<Out: ElemType + Clone> PTransform<(), Out> for Create<Out> {
-    fn expand(&self, input: &PValue<()>) -> PValue<Out> {
+impl<Out: ElemType + DefaultCoder + Clone> PTransform<(), Out> for Create<Out> {
+    fn expand_internal(
+        &self,
+        input: &PValue<()>,
+        _pipeline: std::sync::Arc<crate::internals::pipeline::Pipeline>,
+        _out_coder_urn: &crate::coders::CoderUrnTree,
+        _transform_proto: &mut crate::proto::pipeline_v1::PTransform,
+    ) -> PValue<Out>
+    where
+        Self: Sized,
+    {
         let elements = self.elements.to_vec();
         // TODO: Consider reshuffling.
         input

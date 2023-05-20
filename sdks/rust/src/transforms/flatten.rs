@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use crate::coders::CoderUrnTree;
 use crate::elem_types::ElemType;
 use crate::internals::pipeline::Pipeline;
 use crate::internals::pvalue::{PTransform, PValue};
@@ -42,6 +43,7 @@ where
         &self,
         _input: &PValue<In>,
         pipeline: Arc<Pipeline>,
+        out_coder_urn: &CoderUrnTree,
         transform_proto: &mut pipeline_v1::PTransform,
     ) -> PValue<Out> {
         let spec = pipeline_v1::FunctionSpec {
@@ -50,8 +52,7 @@ where
         };
         transform_proto.spec = Some(spec);
 
-        // TODO: add coder id
-        pipeline.create_pcollection_internal("".to_string(), pipeline.clone())
+        pipeline.create_pcollection_internal(out_coder_urn, pipeline.clone())
     }
 }
 

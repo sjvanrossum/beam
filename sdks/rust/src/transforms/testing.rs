@@ -22,7 +22,8 @@ use super::group_by_key::GroupByKey;
 use super::impulse::Impulse;
 use super::pardo::ParDo;
 use crate::{
-    elem_types::{kv::KV, ElemType},
+    coders::urns::UNIT_CODER_URN,
+    elem_types::{kv::KV, DefaultCoder, ElemType},
     internals::pvalue::{PTransform, PType, PValue},
 };
 
@@ -39,10 +40,19 @@ impl<E: ElemType + Clone + Ord> AssertEqualUnordered<E> {
     }
 }
 
-impl<E: ElemType + Clone + PartialEq + Ord + fmt::Debug> PTransform<E, ()>
+impl<E: ElemType + DefaultCoder + Clone + PartialEq + Ord + fmt::Debug> PTransform<E, ()>
     for AssertEqualUnordered<E>
 {
-    fn expand(&self, input: &PValue<E>) -> PValue<()> {
+    fn expand_internal(
+        &self,
+        input: &PValue<E>,
+        _pipeline: std::sync::Arc<crate::internals::pipeline::Pipeline>,
+        _out_coder_urn: &crate::coders::CoderUrnTree,
+        _transform_proto: &mut crate::proto::pipeline_v1::PTransform,
+    ) -> PValue<()>
+    where
+        Self: Sized,
+    {
         // If input is empty, we still need an element to ensure the assertion happens.
         let dummy = dummy_root(input)
             .apply(Impulse::new())
@@ -77,5 +87,10 @@ impl<E: ElemType + Clone + PartialEq + Ord + fmt::Debug> PTransform<E, ()>
 
 fn dummy_root<T: ElemType + PartialEq + Ord + fmt::Debug>(input: &PValue<T>) -> PValue<()> {
     let pipeline = input.get_pipeline_arc();
-    PValue::new(PType::Root, pipeline, crate::internals::utils::get_bad_id())
+    PValue::new(
+        PType::Root,
+        pipeline,
+        crate::internals::utils::get_bad_id(),
+        UNIT_CODER_URN.to_string(),
+    )
 }

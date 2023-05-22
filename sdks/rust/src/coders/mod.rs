@@ -21,6 +21,9 @@ pub mod rust_coders;
 pub mod standard_coders;
 pub mod urns;
 
+mod preset_coder_from_variant;
+pub(crate) use preset_coder_from_variant::preset_coder_from_variant;
+
 mod coder_urn_tree;
 pub(crate) use coder_urn_tree::CoderUrnTree;
 
@@ -28,7 +31,7 @@ mod pipeline_construction;
 pub use pipeline_construction::CoderForPipeline;
 
 mod register_coders;
-pub(crate) use register_coders::CoderFromUrnFn;
+pub(crate) use register_coders::CustomCoderFromUrnFn;
 
 use crate::elem_types::ElemType;
 use std::fmt;
@@ -102,6 +105,10 @@ pub trait CoderUrn {
 /// 1. The SDK harness receives the serialized coder's URN and its ID from Fn API.
 /// 2. The SDK harness deserializes the coder's URN and creates an instance of the coder specified by the URN.
 pub trait Coder: fmt::Debug {
+    fn new(component_coders: Vec<Box<dyn Coder>>) -> Self
+    where
+        Self: Sized;
+
     /// Encode an element into a stream of bytes
     ///
     /// # Arguments

@@ -1,31 +1,14 @@
-use std::fmt;
+mod custom_coder_from_urn;
+pub use custom_coder_from_urn::{CustomCoderFromUrn, CUSTOM_CODER_FROM_URN};
 
-use once_cell::sync::OnceCell;
+use crate::coders::{preset_coder_from_variant, urns::PresetCoderUrn, Coder};
 
-use crate::coders::{Coder, CoderFromUrnFn, CoderUrnTree};
+pub(crate) fn coder_from_urn(urn: &str, component_coders: Vec<Box<dyn Coder>>) -> Box<dyn Coder> {
+    use strum::IntoEnumIterator;
 
-/// The visibility is `pub` because this is used internally from `register_coders!` macro.
-pub static CODER_FROM_URN: OnceCell<CoderFromUrn> = OnceCell::new();
-
-/// The visibility is `pub` because this is instantiated internally from `register_coders!` macro.
-pub struct CoderFromUrn {
-    pub func: CoderFromUrnFn,
-}
-
-impl CoderFromUrn {
-    pub(in crate::worker) fn global() -> &'static CoderFromUrn {
-        CODER_FROM_URN
-            .get()
-            .expect("you might forget calling `register_coders!(CustomCoder1, CustomCoder2)`")
-    }
-
-    pub(in crate::worker) fn coder_from_urn(&self, urn_tree: &CoderUrnTree) -> Box<dyn Coder> {
-        (self.func)(urn_tree)
-    }
-}
-
-impl fmt::Debug for CoderFromUrn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CustomCoderFromUrn").finish()
+    let opt_preset = PresetCoderUrn::iter().find(|variant| variant.as_str() == urn);
+    match opt_preset {
+        Some(preset) => preset_coder_from_variant(&preset, component_coders),
+        None => CustomCoderFromUrn::global().custom_coder_from_urn(urn, component_coders).unwrap_or_else(|| panic!("coder with URN {} not found. Did you register the custom coder by `register_coder!()`?", urn)),
     }
 }

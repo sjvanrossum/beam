@@ -750,6 +750,28 @@ public class KafkaIOTest {
   }
 
   @Test
+  public void testUnboundedSourceWithUnmatchedPattern() {
+    int numElements = 1000;
+
+    List<String> topics = ImmutableList.of("chest", "crest", "egest", "guest", "quest", "wrest");
+
+    KafkaIO.Read<byte[], Long> reader =
+        KafkaIO.<byte[], Long>read()
+            .withBootstrapServers("none")
+            .withTopicPattern(Pattern.compile("[a-z]est"))
+            .withConsumerFactoryFn(
+                new ConsumerFactoryFn(topics, 10, numElements, OffsetResetStrategy.EARLIEST))
+            .withKeyDeserializer(ByteArrayDeserializer.class)
+            .withValueDeserializer(LongDeserializer.class)
+            .withMaxNumRecords(numElements);
+
+    PCollection<Long> input = p.apply(reader.withoutMetadata()).apply(Values.create());
+
+    addCountingAsserts(input, 0);
+    p.run();
+  }
+
+  @Test
   public void testUnboundedSourceWithWrongTopic() {
     // Expect an exception when provided Kafka topic doesn't exist.
     thrown.expect(PipelineExecutionException.class);

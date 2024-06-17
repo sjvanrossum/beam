@@ -1261,7 +1261,7 @@ public class PubsubIO {
      */
     private static final int MAX_PUBLISH_BATCH_BYTE_SIZE_DEFAULT = ((10 * 1000 * 1000) / 4) * 3;
 
-    private static final int MAX_PUBLISH_BATCH_SIZE = 100;
+    private static final int MAX_PUBLISH_BATCH_SIZE = 1000;
 
     abstract @Nullable ValueProvider<PubsubTopic> getTopicProvider();
 

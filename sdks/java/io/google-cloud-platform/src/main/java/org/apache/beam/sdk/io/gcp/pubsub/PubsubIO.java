@@ -1480,6 +1480,7 @@ public class PubsubIO {
                       new PreparePubsubWriteDoFn<>(
                           getFormatFn(),
                           topicFunction,
+                          getNeedsOrderingKey(),
                           maxMessageSize,
                           getBadRecordRouter(),
                           input.getCoder(),

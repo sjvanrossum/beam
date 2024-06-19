@@ -1550,7 +1550,7 @@ public class PubsubIO {
         }
       }
 
-      private transient Map<PubsubTopic, OutgoingData> output;
+      private transient Map<KV<PubsubTopic, String>, OutgoingData> output;
 
       private transient PubsubClient pubsubClient;
 
@@ -1592,19 +1592,21 @@ public class PubsubIO {
           pubsubTopic =
               PubsubTopic.fromPath(Preconditions.checkArgumentNotNull(message.getTopic()));
         }
+        String orderingKey = message.getOrderingKey();
+
         // Checking before adding the message stops us from violating max batch size or bytes
-        OutgoingData currentTopicOutput =
-            output.computeIfAbsent(pubsubTopic, t -> new OutgoingData());
-        if (currentTopicOutput.messages.size() >= maxPublishBatchSize
-            || (!currentTopicOutput.messages.isEmpty()
-                && (currentTopicOutput.bytes + messageSize) >= maxPublishBatchByteSize)) {
-          publish(pubsubTopic, currentTopicOutput.messages);
-          currentTopicOutput.messages.clear();
-          currentTopicOutput.bytes = 0;
+        OutgoingData currentTopicAndOrderingKeyOutput =
+            output.computeIfAbsent(KV.of(pubsubTopic, orderingKey), t -> new OutgoingData());
+        if (currentTopicAndOrderingKeyOutput.messages.size() >= maxPublishBatchSize
+            || (!currentTopicAndOrderingKeyOutput.messages.isEmpty()
+                && (currentTopicAndOrderingKeyOutput.bytes + messageSize)
+                    >= maxPublishBatchByteSize)) {
+          publish(pubsubTopic, currentTopicAndOrderingKeyOutput.messages);
+          currentTopicAndOrderingKeyOutput.messages.clear();
+          currentTopicAndOrderingKeyOutput.bytes = 0;
         }
 
         Map<String, String> attributes = message.getAttributeMap();
-        String orderingKey = message.getOrderingKey();
 
         com.google.pubsub.v1.PubsubMessage.Builder msgBuilder =
             com.google.pubsub.v1.PubsubMessage.newBuilder()
@@ -1616,16 +1618,16 @@ public class PubsubIO {
         }
 
         // NOTE: The record id is always null.
-        currentTopicOutput.messages.add(
+        currentTopicAndOrderingKeyOutput.messages.add(
             OutgoingMessage.of(
                 msgBuilder.build(), timestamp.getMillis(), null, message.getTopic()));
-        currentTopicOutput.bytes += messageSize;
+        currentTopicAndOrderingKeyOutput.bytes += messageSize;
       }
 
       @FinishBundle
       public void finishBundle() throws IOException {
-        for (Map.Entry<PubsubTopic, OutgoingData> entry : output.entrySet()) {
-          publish(entry.getKey(), entry.getValue().messages);
+        for (Map.Entry<KV<PubsubTopic, @Nullable String>, OutgoingData> entry : output.entrySet()) {
+          publish(entry.getKey().getKey(), entry.getValue().messages);
         }
         output = null;
         pubsubClient.close();

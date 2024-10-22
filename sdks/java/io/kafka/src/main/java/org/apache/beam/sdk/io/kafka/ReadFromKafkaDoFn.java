@@ -19,6 +19,8 @@ package org.apache.beam.sdk.io.kafka;
 
 import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
+import java.math.BigDecimal;
+import java.math.MathContext;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -32,6 +34,7 @@ import org.apache.beam.sdk.io.kafka.KafkaIOUtils.MovingAvg;
 import org.apache.beam.sdk.io.kafka.KafkaUnboundedReader.TimestampPolicyContext;
 import org.apache.beam.sdk.io.range.OffsetRange;
 import org.apache.beam.sdk.metrics.Distribution;
+import org.apache.beam.sdk.metrics.Gauge;
 import org.apache.beam.sdk.metrics.Lineage;
 import org.apache.beam.sdk.metrics.Metrics;
 import org.apache.beam.sdk.transforms.DoFn;
@@ -337,15 +340,15 @@ abstract class ReadFromKafkaDoFn<K, V>
   public double getSize(
       @Element KafkaSourceDescriptor kafkaSourceDescriptor, @Restriction OffsetRange offsetRange)
       throws Exception {
-    final LoadingCache<KafkaSourceDescriptor, AverageRecordSize> avgRecordSize =
-        Preconditions.checkStateNotNull(this.avgRecordSize);
+    final @Nullable AverageRecordSize recordSizeEstimator =
+        Preconditions.checkStateNotNull(this.avgRecordSize).getIfPresent(kafkaSourceDescriptor);
     double numRecords =
         restrictionTracker(kafkaSourceDescriptor, offsetRange).getProgress().getWorkRemaining();
     // Before processing elements, we don't have a good estimated size of records and offset gap.
-    if (!avgRecordSize.asMap().containsKey(kafkaSourceDescriptor)) {
+    if (recordSizeEstimator == null) {
       return numRecords;
     }
-    return avgRecordSize.get(kafkaSourceDescriptor).getTotalSize(numRecords);
+    return recordSizeEstimator.getTotalSize(numRecords);
   }
 
   @NewTracker
@@ -358,26 +361,8 @@ abstract class ReadFromKafkaDoFn<K, V>
     // OffsetEstimators are cached for each topic-partition because they hold a stateful connection,
     // so we want to minimize the amount of connections that we start and track with Kafka. Another
     // point is that it has a memoized backlog, and this should make that more reusable estimations.
-    final Map<KafkaSourceDescriptor, KafkaLatestOffsetEstimator> offsetEstimatorCacheInstance =
-        Preconditions.checkStateNotNull(this.offsetEstimatorCache);
-
-    KafkaLatestOffsetEstimator offsetEstimator =
-        offsetEstimatorCacheInstance.get(kafkaSourceDescriptor);
-    if (offsetEstimator == null || offsetEstimator.isClosed()) {
-      Map<String, Object> updatedConsumerConfig =
-          overrideBootstrapServersConfig(consumerConfig, kafkaSourceDescriptor);
-
-      LOG.info("Creating Kafka consumer for offset estimation for {}", kafkaSourceDescriptor);
-
-      TopicPartition topicPartition = kafkaSourceDescriptor.getTopicPartition();
-      Consumer<byte[], byte[]> offsetConsumer =
-          consumerFactoryFn.apply(
-              KafkaIOUtils.getOffsetConsumerConfig(
-                  "tracker-" + topicPartition, offsetConsumerConfig, updatedConsumerConfig));
-      offsetEstimator = new KafkaLatestOffsetEstimator(offsetConsumer, topicPartition);
-      offsetEstimatorCacheInstance.put(kafkaSourceDescriptor, offsetEstimator);
-    }
-
+    final KafkaLatestOffsetEstimator offsetEstimator =
+        getKafkaLatestOffsetEstimator(kafkaSourceDescriptor);
     return new GrowableOffsetRangeTracker(restriction.getFrom(), offsetEstimator);
   }
 
@@ -388,8 +373,10 @@ abstract class ReadFromKafkaDoFn<K, V>
       WatermarkEstimator<Instant> watermarkEstimator,
       MultiOutputReceiver receiver)
       throws Exception {
-    final LoadingCache<KafkaSourceDescriptor, AverageRecordSize> avgRecordSize =
-        Preconditions.checkStateNotNull(this.avgRecordSize);
+    final AverageRecordSize recordSizeEstimator =
+        Preconditions.checkStateNotNull(this.avgRecordSize).get(kafkaSourceDescriptor);
+    final KafkaLatestOffsetEstimator offsetEstimator =
+        getKafkaLatestOffsetEstimator(kafkaSourceDescriptor);
     final Deserializer<K> keyDeserializerInstance =
         Preconditions.checkStateNotNull(this.keyDeserializerInstance);
     final Deserializer<V> valueDeserializerInstance =
@@ -400,6 +387,13 @@ abstract class ReadFromKafkaDoFn<K, V>
         Metrics.distribution(
             METRIC_NAMESPACE,
             RAW_SIZE_METRIC_PREFIX + kafkaSourceDescriptor.getTopicPartition().toString());
+    final Gauge backlogBytes =
+        Metrics.gauge(
+            METRIC_NAMESPACE,
+            RAW_SIZE_METRIC_PREFIX
+                + "backlogBytes_"
+                + kafkaSourceDescriptor.getTopicPartition().toString());
+
     // Stop processing current TopicPartition when it's time to stop.
     if (checkStopReadingFn != null
         && checkStopReadingFn.apply(kafkaSourceDescriptor.getTopicPartition())) {
@@ -493,9 +487,7 @@ abstract class ReadFromKafkaDoFn<K, V>
             int recordSize =
                 (rawRecord.key() == null ? 0 : rawRecord.key().length)
                     + (rawRecord.value() == null ? 0 : rawRecord.value().length);
-            avgRecordSize
-                .getUnchecked(kafkaSourceDescriptor)
-                .update(recordSize, rawRecord.offset() - expectedOffset);
+            recordSizeEstimator.update(recordSize, rawRecord.offset() - expectedOffset);
             rawSizes.update(recordSize);
             expectedOffset = rawRecord.offset() + 1;
             Instant outputTimestamp;
@@ -526,8 +518,42 @@ abstract class ReadFromKafkaDoFn<K, V>
             }
           }
         }
+
+        // Sets the estimated remaining backlog size in bytes for the active assignment.
+        backlogBytes.set(
+            (long)
+                recordSizeEstimator.getTotalSize(
+                    BigDecimal.valueOf(offsetEstimator.estimate())
+                        .subtract(BigDecimal.valueOf(expectedOffset), MathContext.DECIMAL128)
+                        .doubleValue()));
       }
     }
+  }
+
+  private KafkaLatestOffsetEstimator getKafkaLatestOffsetEstimator(
+      KafkaSourceDescriptor kafkaSourceDescriptor) {
+    return Preconditions.checkStateNotNull(this.offsetEstimatorCache)
+        .compute(
+            kafkaSourceDescriptor,
+            (k, v) -> {
+              if (v != null && !v.isClosed()) {
+                return v;
+              }
+
+              Map<String, Object> updatedConsumerConfig =
+                  overrideBootstrapServersConfig(consumerConfig, k);
+
+              LOG.info("Creating Kafka consumer for offset estimation for {}", k);
+
+              TopicPartition topicPartition = k.getTopicPartition();
+              Consumer<byte[], byte[]> offsetConsumer =
+                  consumerFactoryFn.apply(
+                      KafkaIOUtils.getOffsetConsumerConfig(
+                          "tracker-" + topicPartition,
+                          offsetConsumerConfig,
+                          updatedConsumerConfig));
+              return new KafkaLatestOffsetEstimator(offsetConsumer, topicPartition);
+            });
   }
 
   private boolean topicPartitionExists(

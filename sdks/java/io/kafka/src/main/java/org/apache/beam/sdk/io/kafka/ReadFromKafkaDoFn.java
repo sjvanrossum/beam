@@ -220,9 +220,10 @@ abstract class ReadFromKafkaDoFn<K, V>
   // Valid between bundle start and bundle finish.
   private transient @Nullable Deserializer<K> keyDeserializerInstance = null;
   private transient @Nullable Deserializer<V> valueDeserializerInstance = null;
-  private transient @Nullable Map<TopicPartition, KafkaLatestOffsetEstimator> offsetEstimatorCache;
+  private transient @Nullable Map<KafkaSourceDescriptor, KafkaLatestOffsetEstimator>
+      offsetEstimatorCache;
 
-  private transient @Nullable LoadingCache<TopicPartition, AverageRecordSize> avgRecordSize;
+  private transient @Nullable LoadingCache<KafkaSourceDescriptor, AverageRecordSize> avgRecordSize;
   private static final long DEFAULT_KAFKA_POLL_TIMEOUT = 2L;
   @VisibleForTesting final long consumerPollingTimeout;
   @VisibleForTesting final DeserializerProvider<K> keyDeserializerProvider;
@@ -336,15 +337,15 @@ abstract class ReadFromKafkaDoFn<K, V>
   public double getSize(
       @Element KafkaSourceDescriptor kafkaSourceDescriptor, @Restriction OffsetRange offsetRange)
       throws Exception {
-    final LoadingCache<TopicPartition, AverageRecordSize> avgRecordSize =
+    final LoadingCache<KafkaSourceDescriptor, AverageRecordSize> avgRecordSize =
         Preconditions.checkStateNotNull(this.avgRecordSize);
     double numRecords =
         restrictionTracker(kafkaSourceDescriptor, offsetRange).getProgress().getWorkRemaining();
     // Before processing elements, we don't have a good estimated size of records and offset gap.
-    if (!avgRecordSize.asMap().containsKey(kafkaSourceDescriptor.getTopicPartition())) {
+    if (!avgRecordSize.asMap().containsKey(kafkaSourceDescriptor)) {
       return numRecords;
     }
-    return avgRecordSize.get(kafkaSourceDescriptor.getTopicPartition()).getTotalSize(numRecords);
+    return avgRecordSize.get(kafkaSourceDescriptor).getTotalSize(numRecords);
   }
 
   @NewTracker
@@ -357,23 +358,24 @@ abstract class ReadFromKafkaDoFn<K, V>
     // OffsetEstimators are cached for each topic-partition because they hold a stateful connection,
     // so we want to minimize the amount of connections that we start and track with Kafka. Another
     // point is that it has a memoized backlog, and this should make that more reusable estimations.
-    final Map<TopicPartition, KafkaLatestOffsetEstimator> offsetEstimatorCacheInstance =
+    final Map<KafkaSourceDescriptor, KafkaLatestOffsetEstimator> offsetEstimatorCacheInstance =
         Preconditions.checkStateNotNull(this.offsetEstimatorCache);
 
-    TopicPartition topicPartition = kafkaSourceDescriptor.getTopicPartition();
-    KafkaLatestOffsetEstimator offsetEstimator = offsetEstimatorCacheInstance.get(topicPartition);
+    KafkaLatestOffsetEstimator offsetEstimator =
+        offsetEstimatorCacheInstance.get(kafkaSourceDescriptor);
     if (offsetEstimator == null || offsetEstimator.isClosed()) {
       Map<String, Object> updatedConsumerConfig =
           overrideBootstrapServersConfig(consumerConfig, kafkaSourceDescriptor);
 
-      LOG.info("Creating Kafka consumer for offset estimation for {}", topicPartition);
+      LOG.info("Creating Kafka consumer for offset estimation for {}", kafkaSourceDescriptor);
 
+      TopicPartition topicPartition = kafkaSourceDescriptor.getTopicPartition();
       Consumer<byte[], byte[]> offsetConsumer =
           consumerFactoryFn.apply(
               KafkaIOUtils.getOffsetConsumerConfig(
                   "tracker-" + topicPartition, offsetConsumerConfig, updatedConsumerConfig));
       offsetEstimator = new KafkaLatestOffsetEstimator(offsetConsumer, topicPartition);
-      offsetEstimatorCacheInstance.put(topicPartition, offsetEstimator);
+      offsetEstimatorCacheInstance.put(kafkaSourceDescriptor, offsetEstimator);
     }
 
     return new GrowableOffsetRangeTracker(restriction.getFrom(), offsetEstimator);
@@ -386,12 +388,14 @@ abstract class ReadFromKafkaDoFn<K, V>
       WatermarkEstimator<Instant> watermarkEstimator,
       MultiOutputReceiver receiver)
       throws Exception {
-    final LoadingCache<TopicPartition, AverageRecordSize> avgRecordSize =
+    final LoadingCache<KafkaSourceDescriptor, AverageRecordSize> avgRecordSize =
         Preconditions.checkStateNotNull(this.avgRecordSize);
     final Deserializer<K> keyDeserializerInstance =
         Preconditions.checkStateNotNull(this.keyDeserializerInstance);
     final Deserializer<V> valueDeserializerInstance =
         Preconditions.checkStateNotNull(this.valueDeserializerInstance);
+    // TODO: Fix conflation of source descriptors with equal topic partitions, but different
+    // bootstrap servers
     final Distribution rawSizes =
         Metrics.distribution(
             METRIC_NAMESPACE,
@@ -416,9 +420,7 @@ abstract class ReadFromKafkaDoFn<K, V>
               Optional.ofNullable(watermarkEstimator.currentWatermark()));
     }
 
-    LOG.info(
-        "Creating Kafka consumer for process continuation for {}",
-        kafkaSourceDescriptor.getTopicPartition());
+    LOG.info("Creating Kafka consumer for process continuation for {}", kafkaSourceDescriptor);
     try (Consumer<byte[], byte[]> consumer = consumerFactoryFn.apply(updatedConsumerConfig)) {
       ConsumerSpEL.evaluateAssign(
           consumer, ImmutableList.of(kafkaSourceDescriptor.getTopicPartition()));
@@ -492,7 +494,7 @@ abstract class ReadFromKafkaDoFn<K, V>
                 (rawRecord.key() == null ? 0 : rawRecord.key().length)
                     + (rawRecord.value() == null ? 0 : rawRecord.value().length);
             avgRecordSize
-                .getUnchecked(kafkaSourceDescriptor.getTopicPartition())
+                .getUnchecked(kafkaSourceDescriptor)
                 .update(recordSize, rawRecord.offset() - expectedOffset);
             rawSizes.update(recordSize);
             expectedOffset = rawRecord.offset() + 1;
@@ -598,9 +600,10 @@ abstract class ReadFromKafkaDoFn<K, V>
         CacheBuilder.newBuilder()
             .maximumSize(1000L)
             .build(
-                new CacheLoader<TopicPartition, AverageRecordSize>() {
+                new CacheLoader<KafkaSourceDescriptor, AverageRecordSize>() {
                   @Override
-                  public AverageRecordSize load(TopicPartition topicPartition) throws Exception {
+                  public AverageRecordSize load(KafkaSourceDescriptor kafkaSourceDescriptor)
+                      throws Exception {
                     return new AverageRecordSize();
                   }
                 });

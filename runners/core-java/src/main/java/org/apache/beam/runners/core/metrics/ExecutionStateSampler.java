@@ -24,9 +24,9 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
@@ -68,7 +68,11 @@ public class ExecutionStateSampler {
   // The sampling period can be reset with flag --experiment state_sampling_period_millis=<value>.
   private static long periodMs = 200;
 
-  private @Nullable Future<Void> executionSamplerFuture = null;
+  private final ScheduledExecutorService scheduledExecutorService =
+      Executors.newSingleThreadScheduledExecutor(
+          new ThreadFactoryBuilder().setDaemon(true).setNameFormat("state-sampler-%d").build());
+
+  private @Nullable Future<?> executionSamplerFuture = null;
 
   /** Set the state sampler sampling period. */
   public static void setSamplingPeriod(long samplingPeriodMillis) {
@@ -85,49 +89,27 @@ public class ExecutionStateSampler {
    * state sampler will periodically sample the current state of all the threads it has been asked
    * to manage.
    */
-  public void start() {
-    start(
-        Executors.newSingleThreadExecutor(
-            new ThreadFactoryBuilder().setDaemon(true).setNameFormat("state-sampler-%d").build()));
-  }
-
-  /**
-   * The {@link ExecutorService} should be configured to create daemon threads, and should ideally
-   * create threads named something like {@code "state-sampler-%d"}.
-   */
-  @VisibleForTesting
-  synchronized void start(ExecutorService executor) {
+  public synchronized void start() {
     if (executionSamplerFuture != null) {
       return;
     }
 
+    // Set the sampleTimeMillis prior to the initial execution.
+    lastSampleTimeMillis = clock.getMillis();
     executionSamplerFuture =
-        executor.submit(
+        scheduledExecutorService.scheduleWithFixedDelay(
             () -> {
-              lastSampleTimeMillis = clock.getMillis();
-              long targetTimeMillis = lastSampleTimeMillis + periodMs;
-              while (!Thread.interrupted()) {
-                long currentTimeMillis = clock.getMillis();
-                long difference = targetTimeMillis - currentTimeMillis;
-                if (difference > 0) {
-                  try {
-                    Thread.sleep(difference);
-                  } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                  }
-                } else {
-                  // Call doSampling if more than PERIOD_MS have passed.
-                  doSampling(currentTimeMillis - lastSampleTimeMillis);
-                  lastSampleTimeMillis = currentTimeMillis;
-                  targetTimeMillis = lastSampleTimeMillis + periodMs;
-                }
-              }
-              return null;
-            });
+              long currentTimeMillis = clock.getMillis();
+              doSampling(currentTimeMillis - lastSampleTimeMillis);
+              lastSampleTimeMillis = currentTimeMillis;
+            },
+            0,
+            periodMs,
+            TimeUnit.MILLISECONDS);
   }
 
   public synchronized void stop() {
-    final Future<Void> executionSamplerFuture = this.executionSamplerFuture;
+    final Future<?> executionSamplerFuture = this.executionSamplerFuture;
     if (executionSamplerFuture == null) {
       return;
     }

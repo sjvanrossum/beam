@@ -58,33 +58,7 @@ final class ConcurrentConsumer<K, V> implements AutoCloseable {
     @Override
     protected boolean onAdvance(final int phase, final int registeredParties) {
       try {
-        final Map<TopicPartition, Long> positionsView = positions.asMap();
-        final Set<TopicPartition> prevAssignment = consumer.assignment();
-        final Set<TopicPartition> nextAssignment = positionsView.keySet();
-
-        if (!times.isEmpty()) {
-          offsetsForTimesResult = consumer.offsetsForTimes(times.asMap());
-          times.clear();
-        }
-
-        if (!prevAssignment.equals(nextAssignment)) {
-          consumer.assign(nextAssignment);
-        }
-
-        positionsView.forEach(
-            (tp, o) -> {
-              if (o == Long.MIN_VALUE) {
-                consumer.pause(Collections.singleton(tp));
-              } else if (!prevAssignment.contains(tp)) {
-                consumer.seek(tp, o);
-              }
-            });
-
-        if (consumer.paused().size() != nextAssignment.size()) {
-          pollResult = consumer.poll(pollDuration.toMillis());
-        }
-
-        nextAssignment.forEach(tp -> positions.put(tp, consumer.position(tp)));
+        ConcurrentConsumer.this.pollAdvance();
         return false;
       } catch (WakeupException e) {
         if (!this.isTerminated()) {
@@ -220,6 +194,36 @@ final class ConcurrentConsumer<K, V> implements AutoCloseable {
     checkState(this.phaser.arriveAndAwaitAdvance() >= 0);
 
     return this.pollResult.records(topicPartition);
+  }
+
+  private void pollAdvance() {
+    final Map<TopicPartition, Long> positionsView = this.positions.asMap();
+    final Set<TopicPartition> prevAssignment = this.consumer.assignment();
+    final Set<TopicPartition> nextAssignment = positionsView.keySet();
+
+    if (!this.times.isEmpty()) {
+      offsetsForTimesResult = this.consumer.offsetsForTimes(this.times.asMap());
+      this.times.clear();
+    }
+
+    if (!prevAssignment.equals(nextAssignment)) {
+      this.consumer.assign(nextAssignment);
+    }
+
+    positionsView.forEach(
+        (tp, o) -> {
+          if (o == Long.MIN_VALUE) {
+            this.consumer.pause(Collections.singleton(tp));
+          } else if (!prevAssignment.contains(tp)) {
+            this.consumer.seek(tp, o);
+          }
+        });
+
+    if (this.consumer.paused().size() != nextAssignment.size()) {
+      pollResult = this.consumer.poll(this.pollDuration.toMillis());
+    }
+
+    nextAssignment.forEach(tp -> this.positions.put(tp, this.consumer.position(tp)));
   }
 
   void unassign(final TopicPartition topicPartition) {

@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
@@ -71,7 +72,6 @@ import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.math.LongMath;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.errors.SerializationException;
@@ -222,7 +222,9 @@ abstract class ReadFromKafkaDoFn<K, V>
     private static final Map<Long, LoadingCache<KafkaSourceDescriptor, AverageRecordSize>>
         AVG_RECORD_SIZE_CACHE = new ConcurrentHashMap<>();
     private static final Map<
-            Long, LoadingCache<Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>>
+            Long,
+            LoadingCache<
+                Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>>
         CONSUMER_EXECUTION_CONTEXT_CACHE = new ConcurrentHashMap<>();
   }
 
@@ -264,7 +266,7 @@ abstract class ReadFromKafkaDoFn<K, V>
       avgRecordSizeCache;
 
   private transient @MonotonicNonNull LoadingCache<
-          Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>
+          Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>
       consumerExecutionContextCache;
 
   private static final long DEFAULT_KAFKA_POLL_TIMEOUT = 2L;
@@ -285,13 +287,15 @@ abstract class ReadFromKafkaDoFn<K, V>
       implements GrowableOffsetRangeTracker.RangeEndEstimator {
 
     private final KafkaSourceDescriptor sourceDescriptor;
-    private final LoadingCache<Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>
+    private final LoadingCache<
+            Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>
         consumerExecutionContextCache;
     private @MonotonicNonNull ConcurrentConsumer<byte[], byte[]> consumerExecutionContextInstance;
 
     KafkaLatestOffsetEstimator(
         final KafkaSourceDescriptor sourceDescriptor,
-        final LoadingCache<Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>
+        final LoadingCache<
+                Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>
             consumerExecutionContextCache) {
       this.sourceDescriptor = sourceDescriptor;
       this.consumerExecutionContextCache = consumerExecutionContextCache;
@@ -312,13 +316,23 @@ abstract class ReadFromKafkaDoFn<K, V>
       }
       this.consumerExecutionContextInstance = consumerExecutionContext;
 
-      final long position =
-          this.consumerExecutionContextInstance.position(this.sourceDescriptor.getTopicPartition());
-      final long lag =
-          this.consumerExecutionContextInstance.currentLagOrMaxLag(
-              this.sourceDescriptor.getTopicPartition());
+      final ConcurrentConsumer.@Nullable TopicPartitionAssignment<byte[], byte[]> assignment =
+          this.consumerExecutionContextInstance
+              .assignment()
+              .get(this.sourceDescriptor.getTopicPartition());
+      if (assignment == null) {
+        return 0L;
+      }
 
-      return LongMath.saturatedAdd(position, lag);
+      final long position;
+      final OptionalLong lag;
+      try {
+        position = assignment.position();
+        lag = assignment.currentLag();
+      } catch (Exception e) {
+        return 0L;
+      }
+      return LongMath.saturatedAdd(position, lag.orElse(0L));
     }
   }
 
@@ -331,7 +345,7 @@ abstract class ReadFromKafkaDoFn<K, V>
     // during processing.
     Optional<ImmutableSet<String>> consumerExecutionContextKey =
         Optional.ofNullable(kafkaSourceDescriptor.getBootStrapServers()).map(ImmutableSet::copyOf);
-    LoadingCache<Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>
+    LoadingCache<Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>
         consumerExecutionContextCache = checkNotNull(this.consumerExecutionContextCache);
     ConcurrentConsumer<byte[], byte[]> consumerExecutionContext =
         consumerExecutionContextCache.get(consumerExecutionContextKey);
@@ -345,14 +359,16 @@ abstract class ReadFromKafkaDoFn<K, V>
       if (startReadOffset != null) {
         startOffset = startReadOffset;
       } else if (startReadTime != null) {
-        final @Nullable OffsetAndTimestamp offsetAndTimestamp =
-            consumerExecutionContext.initialOffsetForTime(
-                kafkaSourceDescriptor.getTopicPartition(), startReadTime.getMillis());
-        startOffset = offsetAndTimestamp == null ? 0L : offsetAndTimestamp.offset();
-      } else {
         startOffset =
-            consumerExecutionContext.initialOffsetForPartition(
-                kafkaSourceDescriptor.getTopicPartition());
+            consumerExecutionContext
+                .offsetForTime(kafkaSourceDescriptor.getTopicPartition(), startReadTime.getMillis())
+                .get()
+                .offset();
+      } else {
+        try (ConcurrentConsumer.TopicPartitionAssignment<byte[], byte[]> assignment =
+            consumerExecutionContext.assign(kafkaSourceDescriptor.getTopicPartition())) {
+          startOffset = assignment.position();
+        }
       }
 
       final @Nullable Long stopReadOffset = kafkaSourceDescriptor.getStopReadOffset();
@@ -360,10 +376,11 @@ abstract class ReadFromKafkaDoFn<K, V>
       if (stopReadOffset != null) {
         endOffset = stopReadOffset;
       } else if (stopReadTime != null) {
-        final @Nullable OffsetAndTimestamp offsetAndTimestamp =
-            consumerExecutionContext.initialOffsetForTime(
-                kafkaSourceDescriptor.getTopicPartition(), stopReadTime.getMillis());
-        endOffset = offsetAndTimestamp == null ? Long.MAX_VALUE : offsetAndTimestamp.offset();
+        endOffset =
+            consumerExecutionContext
+                .offsetForTime(kafkaSourceDescriptor.getTopicPartition(), stopReadTime.getMillis())
+                .get()
+                .offset();
       } else {
         endOffset = Long.MAX_VALUE;
       }
@@ -444,7 +461,7 @@ abstract class ReadFromKafkaDoFn<K, V>
   public OffsetRangeTracker restrictionTracker(
       @Element KafkaSourceDescriptor kafkaSourceDescriptor, @Restriction OffsetRange restriction)
       throws ExecutionException {
-    final LoadingCache<Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>
+    final LoadingCache<Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>
         consumerExecutionContextCache = this.consumerExecutionContextCache;
     if (restriction.getTo() < Long.MAX_VALUE) {
       return new OffsetRangeTracker(restriction);
@@ -465,7 +482,7 @@ abstract class ReadFromKafkaDoFn<K, V>
       throws Throwable {
     final LoadingCache<KafkaSourceDescriptor, AverageRecordSize> avgRecordSizeCache =
         this.avgRecordSizeCache;
-    final LoadingCache<Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>
+    final LoadingCache<Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>
         consumerExecutionContextCache = this.consumerExecutionContextCache;
     final Deserializer<K> keyDeserializerInstance =
         Preconditions.checkStateNotNull(this.keyDeserializerInstance);
@@ -509,13 +526,12 @@ abstract class ReadFromKafkaDoFn<K, V>
     long skippedRecords = 0L;
     final Stopwatch sw = Stopwatch.createStarted();
 
-    try {
-      consumerExecutionContext.assignAndSeek(
-          kafkaSourceDescriptor.getTopicPartition(), startOffset);
-
-      while (!consumerExecutionContext.isClosed()) {
-        for (ConsumerRecord<byte[], byte[]> rawRecord :
-            consumerExecutionContext.poll(kafkaSourceDescriptor.getTopicPartition())) {
+    try (ConcurrentConsumer.TopicPartitionAssignment<byte[], byte[]> assignment =
+        consumerExecutionContext.assign(kafkaSourceDescriptor.getTopicPartition())) {
+      assignment.seek(startOffset);
+      Optional<List<ConsumerRecord<byte[], byte[]>>> rawRecords;
+      while ((rawRecords = assignment.pollOnce()).isPresent()) {
+        for (ConsumerRecord<byte[], byte[]> rawRecord : rawRecords.get()) {
           // If the Kafka consumer returns a record with an offset that is already processed
           // the record can be safely skipped. This is needed because there is a possibility
           // that the seek() above fails to move the offset to the desired position. In which
@@ -600,7 +616,6 @@ abstract class ReadFromKafkaDoFn<K, V>
     } catch (Exception e) {
       LOG.error("Poll failed", e);
     } finally {
-      consumerExecutionContext.unassign(kafkaSourceDescriptor.getTopicPartition());
       if (consumerExecutionContext.isClosed()) {
         LOG.warn("Invalidating closed consumer.");
         consumerExecutionContextCache.invalidate(consumerExecutionContextKey);
@@ -659,49 +674,52 @@ abstract class ReadFromKafkaDoFn<K, V>
     this.consumerExecutionContextCache =
         SharedStateHolder.CONSUMER_EXECUTION_CONTEXT_CACHE.computeIfAbsent(
             fnId,
-            k -> {
-              return CacheBuilder.newBuilder()
-                  .weakValues()
-                  .removalListener(
-                      new RemovalListener<
-                          Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>() {
-                        @Override
-                        public void onRemoval(
-                            RemovalNotification<
-                                    Optional<ImmutableSet<String>>,
-                                    ConcurrentConsumer<byte[], byte[]>>
-                                notification) {
-                          final @Nullable ConcurrentConsumer<byte[], byte[]> value =
-                              notification.getValue();
-                          if (notification.getCause() != RemovalCause.COLLECTED && value != null) {
-                            value.close();
+            k ->
+                CacheBuilder.newBuilder()
+                    .weakValues()
+                    .removalListener(
+                        new RemovalListener<
+                            Optional<ImmutableSet<String>>,
+                            ConcurrentConsumerService<byte[], byte[]>>() {
+                          @Override
+                          public void onRemoval(
+                              RemovalNotification<
+                                      Optional<ImmutableSet<String>>,
+                                      ConcurrentConsumerService<byte[], byte[]>>
+                                  notification) {
+                            final @Nullable ConcurrentConsumerService<byte[], byte[]> value =
+                                notification.getValue();
+                            if (notification.getCause() != RemovalCause.COLLECTED
+                                && value != null) {
+                              value.close();
+                            }
                           }
-                        }
-                      })
-                  .build(
-                      new CacheLoader<
-                          Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>() {
-                        @Override
-                        public ConcurrentConsumer<byte[], byte[]> load(
-                            Optional<ImmutableSet<String>> optionalBootstrapServers)
-                            throws Exception {
-                          final Map<String, Object> consumerConfig =
-                              new HashMap<>(ReadFromKafkaDoFn.this.consumerConfig);
-                          ImmutableSet<String> bootstrapServers;
-                          if (optionalBootstrapServers.isPresent()
-                              && (bootstrapServers = optionalBootstrapServers.get()).size() > 0) {
-                            consumerConfig.put(
-                                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
-                                COMMA_JOINER.join(bootstrapServers));
+                        })
+                    .build(
+                        new CacheLoader<
+                            Optional<ImmutableSet<String>>,
+                            ConcurrentConsumerService<byte[], byte[]>>() {
+                          @Override
+                          public ConcurrentConsumerService<byte[], byte[]> load(
+                              Optional<ImmutableSet<String>> optionalBootstrapServers)
+                              throws Exception {
+                            final Map<String, Object> consumerConfig =
+                                new HashMap<>(ReadFromKafkaDoFn.this.consumerConfig);
+                            ImmutableSet<String> bootstrapServers;
+                            if (optionalBootstrapServers.isPresent()
+                                && (bootstrapServers = optionalBootstrapServers.get()).size() > 0) {
+                              consumerConfig.put(
+                                  ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG,
+                                  COMMA_JOINER.join(bootstrapServers));
+                            }
+                            checkState(
+                                consumerConfig.containsKey(
+                                    ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
+                            return new ConcurrentConsumerService<>(
+                                ReadFromKafkaDoFn.this.consumerFactoryFn.apply(consumerConfig),
+                                ReadFromKafkaDoFn.this.consumerPollingTimeout);
                           }
-                          checkState(
-                              consumerConfig.containsKey(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG));
-                          return new ConcurrentConsumer<>(
-                              ReadFromKafkaDoFn.this.consumerFactoryFn.apply(consumerConfig),
-                              ReadFromKafkaDoFn.this.consumerPollingTimeout);
-                        }
-                      });
-            });
+                        }));
     keyDeserializerInstance = keyDeserializerProvider.getDeserializer(consumerConfig, true);
     valueDeserializerInstance = valueDeserializerProvider.getDeserializer(consumerConfig, false);
     if (checkStopReadingFn != null) {
@@ -714,7 +732,7 @@ abstract class ReadFromKafkaDoFn<K, V>
   public void teardown() throws Exception {
     final LoadingCache<KafkaSourceDescriptor, AverageRecordSize> avgRecordSizeCache =
         this.avgRecordSizeCache;
-    final LoadingCache<Optional<ImmutableSet<String>>, ConcurrentConsumer<byte[], byte[]>>
+    final LoadingCache<Optional<ImmutableSet<String>>, ? extends ConcurrentConsumer<byte[], byte[]>>
         consumerExecutionContextCache = this.consumerExecutionContextCache;
     try {
       if (valueDeserializerInstance != null) {

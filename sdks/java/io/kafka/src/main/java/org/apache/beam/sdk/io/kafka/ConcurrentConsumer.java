@@ -17,6 +17,7 @@
  */
 package org.apache.beam.sdk.io.kafka;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,20 +30,16 @@ import org.apache.kafka.common.TopicPartition;
 
 interface ConcurrentConsumer<K, V> extends AutoCloseable {
   interface TopicPartitionAssignment<K, V> extends AutoCloseable {
-    OptionalLong currentLag() throws Exception;
-
-    Optional<List<ConsumerRecord<K, V>>> pollOnce() throws Exception;
+    Optional<List<ConsumerRecord<K, V>>> poll(Duration timeout) throws Exception;
 
     long position() throws Exception;
 
     void seek(long position) throws Exception;
   }
 
-  TopicPartitionAssignment<K, V> assign(TopicPartition partition) throws Exception;
+  OptionalLong endOffset(final TopicPartition partition) throws Exception;
 
-  Map<TopicPartition, TopicPartitionAssignment<K, V>> assignment();
-
-  boolean isClosed();
+  TopicPartitionAssignment<K, V> assign(final TopicPartition partition) throws Exception;
 
   Map<MetricName, ? extends Metric> metrics();
 

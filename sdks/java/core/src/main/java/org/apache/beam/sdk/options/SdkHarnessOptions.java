@@ -456,4 +456,8 @@ public interface SdkHarnessOptions extends PipelineOptions, MemoryMonitorOptions
       return GlobalOpenTelemetry.get();
     }
   }
+
+  Map<String, String> getOpenTelemetryProperties();
+
+  void setOpenTelemetryProperties(Map<String, String> value);
 }

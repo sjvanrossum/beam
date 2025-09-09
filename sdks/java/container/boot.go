@@ -228,6 +228,14 @@ func main() {
 	enableOpenTelemetryAgent := strings.Contains(options, enableOpenTelemetryAgentOption)
 	if enableOpenTelemetryAgent {
 		args = append(args, openTelemetryAgentArgs)
+		if pipelineOptions, ok := info.GetPipelineOptions().GetFields()["options"]; ok {
+			if openTelemetryProperties, ok := pipelineOptions.GetStructValue().GetFields()["openTelemetryProperties"]; ok {
+				for key, value := range openTelemetryProperties.GetStructValue().GetFields() {
+					args = append(args, fmt.Sprintf("-D%s=%s", key, value.GetStringValue()))
+				}
+			}
+		}
+		args = append(args, "-Dotel.javaagent.extensions=/opt/opentelemetry/extensions")
 		logger.Printf(ctx, "Enabling OpenTelemetry agent.")
 	}
 

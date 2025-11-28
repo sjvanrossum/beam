@@ -24,6 +24,7 @@ import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Pr
 
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import org.apache.beam.sdk.io.range.OffsetRange;
 import org.apache.beam.sdk.transforms.splittabledofn.RestrictionTracker.HasProgress;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.MoreObjects;
@@ -38,9 +39,12 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  */
 public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
     implements HasProgress {
+  protected static final AtomicReferenceFieldUpdater<OffsetRangeTracker> LAST_ATTEMPTED_OFFSET =
+      AtomicReferenceFieldUpdater.newUpdater(Long.class, "lastAttemptedOffset");
+
   protected OffsetRange range;
   protected @Nullable Long lastClaimedOffset = null;
-  protected @Nullable Long lastAttemptedOffset = null;
+  protected volatile @Nullable Long lastAttemptedOffset = null;
 
   public OffsetRangeTracker(OffsetRange range) {
     this.range = checkNotNull(range);
@@ -99,13 +103,16 @@ public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
         lastAttemptedOffset);
     checkArgument(
         i >= range.getFrom(), "Trying to claim offset %s before start of the range %s", i, range);
-    this.lastAttemptedOffset = i;
-    // No respective checkArgument for i < range.to() - it's ok to try claiming offsets beyond it.
-    if (i >= range.getTo()) {
-      return false;
+    try {
+      // No respective checkArgument for i < range.to() - it's ok to try claiming offsets beyond it.
+      if (i >= range.getTo()) {
+        return false;
+      }
+      lastClaimedOffset = i;
+      return true;
+    } finally {
+      LAST_ATTEMPTED_OFFSET.lazySet(this, i);
     }
-    lastClaimedOffset = i;
-    return true;
   }
 
   @Override
@@ -136,6 +143,8 @@ public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
 
   @Override
   public String toString() {
+    // Local copy required for visibility of lastClaimedOffset.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
     return MoreObjects.toStringHelper(this)
         .add("range", range)
         .add("lastClaimedOffset", lastClaimedOffset)

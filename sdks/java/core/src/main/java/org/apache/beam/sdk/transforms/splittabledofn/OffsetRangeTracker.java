@@ -17,6 +17,7 @@
  */
 package org.apache.beam.sdk.transforms.splittabledofn;
 
+import static org.apache.beam.sdk.util.Preconditions.checkStateNotNull;
 import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkArgument;
 import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkNotNull;
 import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
@@ -35,9 +36,6 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * <p>The smallest offset is {@code Long.MIN_VALUE} and the largest offset is {@code Long.MAX_VALUE
  * - 1}.
  */
-@SuppressWarnings({
-  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
-})
 public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
     implements HasProgress {
   protected OffsetRange range;
@@ -54,7 +52,10 @@ public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
   }
 
   @Override
-  public SplitResult<OffsetRange> trySplit(double fractionOfRemainder) {
+  public @Nullable SplitResult<OffsetRange> trySplit(double fractionOfRemainder) {
+    // Local copy required for nullness checker.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
+
     // Convert to BigDecimal in computation to prevent overflow, which may result in loss of
     // precision.
     BigDecimal cur =
@@ -89,6 +90,8 @@ public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
    */
   @Override
   public boolean tryClaim(Long i) {
+    // Local copy required for nullness checker.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
     checkArgument(
         lastAttemptedOffset == null || i > lastAttemptedOffset,
         "Trying to claim offset %s while last attempted was %s",
@@ -96,7 +99,7 @@ public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
         lastAttemptedOffset);
     checkArgument(
         i >= range.getFrom(), "Trying to claim offset %s before start of the range %s", i, range);
-    lastAttemptedOffset = i;
+    this.lastAttemptedOffset = i;
     // No respective checkArgument for i < range.to() - it's ok to try claiming offsets beyond it.
     if (i >= range.getTo()) {
       return false;
@@ -110,8 +113,11 @@ public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
     if (range.getFrom() == range.getTo()) {
       return;
     }
-    checkState(
-        lastAttemptedOffset != null,
+
+    // Local copy required for nullness checker.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
+    checkStateNotNull(
+        lastAttemptedOffset,
         "Last attempted offset should not be null. No work was claimed in non-empty range %s.",
         range);
     checkState(
@@ -139,6 +145,9 @@ public class OffsetRangeTracker extends RestrictionTracker<OffsetRange, Long>
 
   @Override
   public Progress getProgress() {
+    // Local copy required for nullness checker.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
+
     // If we have never attempted an offset, we return the length of the entire range as work
     // remaining.
     // Convert to BigDecimal in computation to prevent overflow, which may result in loss of

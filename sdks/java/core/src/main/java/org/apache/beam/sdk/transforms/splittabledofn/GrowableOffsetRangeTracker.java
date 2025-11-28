@@ -24,6 +24,7 @@ import java.math.MathContext;
 import org.apache.beam.sdk.io.range.OffsetRange;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Suppliers;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.primitives.UnsignedLong;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * An {@link OffsetRangeTracker} for tracking a growable offset range. {@code Long.MAX_VALUE} is
@@ -34,9 +35,6 @@ import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.primitives.Uns
  *
  * <p>The growable range is marked as done by claiming {@code Long.MAX_VALUE}.
  */
-@SuppressWarnings({
-  "nullness" // TODO(https://github.com/apache/beam/issues/20497)
-})
 public class GrowableOffsetRangeTracker extends OffsetRangeTracker {
   /**
    * Provides the estimated end offset of the range.
@@ -71,12 +69,14 @@ public class GrowableOffsetRangeTracker extends OffsetRangeTracker {
 
   // TODO(sjvanrossum): Use UnsignedLong instead of BigDecimal for splitting ranges
   @Override
-  public SplitResult<OffsetRange> trySplit(double fractionOfRemainder) {
+  public @Nullable SplitResult<OffsetRange> trySplit(double fractionOfRemainder) {
     // If current tracking range is no longer growable, split it as a normal range.
     if (range.getTo() != Long.MAX_VALUE || range.getTo() == range.getFrom()) {
       return super.trySplit(fractionOfRemainder);
     }
-    // If current range has been done, there is no more space to split.
+
+    // Local copy required for nullness checker.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
     if (lastAttemptedOffset != null && lastAttemptedOffset == Long.MAX_VALUE) {
       return null;
     }
@@ -117,6 +117,8 @@ public class GrowableOffsetRangeTracker extends OffsetRangeTracker {
       return super.getProgress();
     }
 
+    // Local copy required for nullness checker.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
     final long completedEnd = lastAttemptedOffset == null ? range.getFrom() : lastAttemptedOffset;
     final long remainingEnd = Math.max(completedEnd, rangeEndEstimator.estimate());
 
@@ -127,6 +129,9 @@ public class GrowableOffsetRangeTracker extends OffsetRangeTracker {
 
   @Override
   public IsBounded isBounded() {
+    // Local copy required for nullness checker.
+    final @Nullable Long lastAttemptedOffset = this.lastAttemptedOffset;
+
     // If current range has been done, the range should be bounded.
     if (lastAttemptedOffset != null && lastAttemptedOffset == Long.MAX_VALUE) {
       return IsBounded.BOUNDED;

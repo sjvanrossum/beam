@@ -35,11 +35,9 @@ import org.apache.beam.sdk.extensions.sql.impl.rel.BeamRelNode;
 import org.apache.beam.sdk.extensions.sql.impl.rel.BeamSqlRelUtils;
 import org.apache.beam.sdk.extensions.sql.impl.udf.BeamBuiltinFunctionProvider;
 import org.apache.beam.vendor.calcite.v1_41_0.com.google.common.collect.Table;
-import org.apache.beam.vendor.calcite.v1_41_0.io.substrait.isthmus.SubstraitToCalcite;
-import org.apache.beam.vendor.calcite.v1_41_0.io.substrait.isthmus.SubstraitTypeSystem;
+import org.apache.beam.vendor.calcite.v1_41_0.io.substrait.isthmus.SubstraitRelNodeConverter;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.config.CalciteConnectionConfig;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.jdbc.CalciteSchema;
-import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.jdbc.JavaTypeFactoryImpl;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.plan.Contexts;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.plan.ConventionTraitDef;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.plan.RelOptCost;
@@ -70,6 +68,7 @@ import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.Framework
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.Frameworks;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.Planner;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.Program;
+import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.RelBuilder;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.RelConversionException;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.RuleSet;
 import org.apache.beam.vendor.calcite.v1_41_0.org.apache.calcite.tools.ValidationException;
@@ -261,14 +260,18 @@ public class CalciteQueryPlanner implements QueryPlanner {
     Preconditions.checkArgument(
         plan.getRoots().size() == 1, "Substrait Plan must contain a single root.");
     try {
-      final SubstraitToCalcite converter =
-          new SubstraitToCalcite(
-              DefaultExtensionCatalog.DEFAULT_COLLECTION,
-              new JavaTypeFactoryImpl(SubstraitTypeSystem.TYPE_SYSTEM));
-
-      RelRoot root = converter.convert(plan.getRoots().get(0));
-
-      return convertToBeamRel(root.rel);
+      RelBuilder relBuilder = RelBuilder.create(config);
+      RelNode rel =
+          plan.getRoots()
+              .get(0)
+              .getInput()
+              .accept(
+                  new SubstraitRelNodeConverter(
+                      DefaultExtensionCatalog.DEFAULT_COLLECTION,
+                      relBuilder.getTypeFactory(),
+                      relBuilder),
+                  SubstraitRelNodeConverter.Context.newContext());
+      return convertToBeamRel(rel);
     } catch (CannotPlanException e) {
       throw new SqlConversionException(String.format("Unable to convert plan %s", planProto), e);
     } finally {

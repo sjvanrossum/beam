@@ -57,17 +57,19 @@ public class CalciteQueryPlannerTest extends BaseRelTest {
 
   static {
     try {
-      // select * from medium_table
+      // TODO: Get plan converter to use the default schema
+      // select * from beam.medium_table
       PLAN =
           Plan.parseFrom(
               new byte[] {
-                26, 122, 18, 120, 10, 88, 10, 86, 18, 52, 10, 13, 117, 110, 98, 111, 117, 110, 100,
-                101, 100, 95, 107, 101, 121, 10, 9, 108, 97, 114, 103, 101, 95, 107, 101, 121, 10,
-                2, 105, 100, 18, 20, 10, 4, 42, 2, 16, 2, 10, 4, 42, 2, 16, 2, 10, 4, 42, 2, 16, 2,
-                24, 2, 34, 14, 10, 10, 10, 0, 10, 2, 8, 1, 10, 2, 8, 2, 16, 1, 58, 14, 10, 12, 109,
-                101, 100, 105, 117, 109, 95, 116, 97, 98, 108, 101, 18, 13, 117, 110, 98, 111, 117,
-                110, 100, 101, 100, 95, 107, 101, 121, 18, 9, 108, 97, 114, 103, 101, 95, 107, 101,
-                121, 18, 2, 105, 100, 50, 10, 16, 53, 42, 6, 68, 117, 99, 107, 68, 66
+                26, -128, 1, 18, 126, 10, 94, 10, 92, 18, 52, 10, 13, 117, 110, 98, 111, 117, 110,
+                100, 101, 100, 95, 107, 101, 121, 10, 9, 108, 97, 114, 103, 101, 95, 107, 101, 121,
+                10, 2, 105, 100, 18, 20, 10, 4, 42, 2, 16, 2, 10, 4, 42, 2, 16, 2, 10, 4, 42, 2, 16,
+                2, 24, 2, 34, 14, 10, 10, 10, 0, 10, 2, 8, 1, 10, 2, 8, 2, 16, 1, 58, 20, 10, 4, 98,
+                101, 97, 109, 10, 12, 109, 101, 100, 105, 117, 109, 95, 116, 97, 98, 108, 101, 18,
+                13, 117, 110, 98, 111, 117, 110, 100, 101, 100, 95, 107, 101, 121, 18, 9, 108, 97,
+                114, 103, 101, 95, 107, 101, 121, 18, 2, 105, 100, 50, 10, 16, 53, 42, 6, 68, 117,
+                99, 107, 68, 66
               });
     } catch (Throwable t) {
       throw new RuntimeException(t);
@@ -170,24 +172,27 @@ public class CalciteQueryPlannerTest extends BaseRelTest {
   }
 
   @Test
-  public void testVirtualTableExecution() throws Exception {
-    Plan plan = createValuesPlan();
-
-    // get this logic from the spark translator codebase
-    BeamSqlEnv beamSqlEnv = getBeamSqlEnv();
-
+  public void testNamedTableExecution() throws Exception {
     // Convert the Substrait Plan to a BeamRelNode
-    BeamRelNode beamRelNode = beamSqlEnv.convertToBeamRel(plan);
+    BeamRelNode beamRelNode = env.convertToBeamRel(PLAN);
 
     // Convert to PCollection and run
     PCollection<Row> output = BeamSqlRelUtils.toPCollection(pipeline, beamRelNode);
 
-    Schema schema = Schema.builder().addInt32Field("id").addStringField("name").build();
+    Schema schema =
+        Schema.builder()
+            .addInt32Field("unbounded_key")
+            .addInt32Field("large_key")
+            .addInt32Field("id")
+            .build();
 
     PAssert.that(output)
         .containsInAnyOrder(
-            Row.withSchema(schema).addValues(1, "foo").build(),
-            Row.withSchema(schema).addValues(2, "bar").build());
+            Row.withSchema(schema).addValues(1).addValues(1).addValues(1).build(),
+            Row.withSchema(schema).addValues(1).addValues(1).addValues(2).build(),
+            Row.withSchema(schema).addValues(1).addValues(1).addValues(3).build(),
+            Row.withSchema(schema).addValues(1).addValues(1).addValues(4).build(),
+            Row.withSchema(schema).addValues(1).addValues(1).addValues(5).build());
 
     pipeline.run().waitUntilFinish();
   }

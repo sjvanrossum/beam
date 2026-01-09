@@ -18,6 +18,7 @@
 package org.apache.beam.sdk.extensions.sql;
 
 import com.google.auto.value.AutoValue;
+import io.substrait.proto.Plan;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -115,6 +116,8 @@ public abstract class SqlTransform extends PTransform<PInput, PCollection<Row>> 
 
   abstract String queryString();
 
+  abstract Plan substraitPlan();
+
   abstract @Nullable PTransform<PCollection<Row>, ? extends POutput> errorsTransformer();
 
   abstract List<String> ddlStrings();
@@ -169,7 +172,9 @@ public abstract class SqlTransform extends PTransform<PInput, PCollection<Row>> 
     ddlStrings().forEach(sqlEnv::executeDdl);
     return BeamSqlRelUtils.toPCollection(
         input.getPipeline(),
-        sqlEnv.parseQuery(queryString(), queryParameters()),
+        queryString().isEmpty()
+            ? sqlEnv.convertToBeamRel(substraitPlan())
+            : sqlEnv.parseQuery(queryString(), queryParameters()),
         errorsTransformer());
   }
 
@@ -229,6 +234,10 @@ public abstract class SqlTransform extends PTransform<PInput, PCollection<Row>> 
    */
   public static SqlTransform query(String queryString) {
     return builder().setQueryString(queryString).build();
+  }
+
+  public static SqlTransform fromSubstrait(Plan planProto) {
+    return builder().setSubstraitPlan(planProto).build();
   }
 
   public SqlTransform withTableProvider(String name, TableProvider tableProvider) {
@@ -309,6 +318,8 @@ public abstract class SqlTransform extends PTransform<PInput, PCollection<Row>> 
 
   static Builder builder() {
     return new AutoValue_SqlTransform.Builder()
+        .setQueryString("")
+        .setSubstraitPlan(Plan.getDefaultInstance())
         .setQueryParameters(QueryParameters.ofNone())
         .setDdlStrings(Collections.emptyList())
         .setUdafDefinitions(Collections.emptyList())
@@ -321,6 +332,8 @@ public abstract class SqlTransform extends PTransform<PInput, PCollection<Row>> 
   @AutoValue.CopyAnnotations
   abstract static class Builder {
     abstract Builder setQueryString(String queryString);
+
+    abstract Builder setSubstraitPlan(Plan planProto);
 
     abstract Builder setQueryParameters(QueryParameters queryParameters);
 

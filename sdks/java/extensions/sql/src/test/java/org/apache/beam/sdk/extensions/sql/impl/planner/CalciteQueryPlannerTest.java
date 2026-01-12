@@ -18,11 +18,15 @@
 package org.apache.beam.sdk.extensions.sql.impl.planner;
 
 import io.substrait.proto.Expression;
+import io.substrait.proto.NamedStruct;
 import io.substrait.proto.Plan;
 import io.substrait.proto.PlanRel;
 import io.substrait.proto.ReadRel;
+import io.substrait.proto.ReadRel.NamedTable;
 import io.substrait.proto.Rel;
 import io.substrait.proto.RelRoot;
+import io.substrait.proto.Type;
+import io.substrait.proto.Version;
 import org.apache.beam.sdk.extensions.sql.impl.BeamSqlEnv;
 import org.apache.beam.sdk.extensions.sql.impl.CalciteQueryPlanner;
 import org.apache.beam.sdk.extensions.sql.impl.rel.BaseRelTest;
@@ -53,28 +57,61 @@ import org.junit.Test;
 public class CalciteQueryPlannerTest extends BaseRelTest {
   @Rule public final TestPipeline pipeline = TestPipeline.create();
 
-  private static final Plan PLAN;
-
-  static {
-    try {
-      // TODO: Get plan converter to use the default schema
-      // select * from beam.medium_table
-      PLAN =
-          Plan.parseFrom(
-              new byte[] {
-                26, -128, 1, 18, 126, 10, 94, 10, 92, 18, 52, 10, 13, 117, 110, 98, 111, 117, 110,
-                100, 101, 100, 95, 107, 101, 121, 10, 9, 108, 97, 114, 103, 101, 95, 107, 101, 121,
-                10, 2, 105, 100, 18, 20, 10, 4, 42, 2, 16, 2, 10, 4, 42, 2, 16, 2, 10, 4, 42, 2, 16,
-                2, 24, 2, 34, 14, 10, 10, 10, 0, 10, 2, 8, 1, 10, 2, 8, 2, 16, 1, 58, 20, 10, 4, 98,
-                101, 97, 109, 10, 12, 109, 101, 100, 105, 117, 109, 95, 116, 97, 98, 108, 101, 18,
-                13, 117, 110, 98, 111, 117, 110, 100, 101, 100, 95, 107, 101, 121, 18, 9, 108, 97,
-                114, 103, 101, 95, 107, 101, 121, 18, 2, 105, 100, 50, 10, 16, 53, 42, 6, 68, 117,
-                99, 107, 68, 66
-              });
-    } catch (Throwable t) {
-      throw new RuntimeException(t);
-    }
-  }
+  private static final Plan PLAN =
+      Plan.newBuilder()
+          .setVersion(
+              Version.newBuilder()
+                  .setMajorNumber(0)
+                  .setMinorNumber(77)
+                  .setPatchNumber(0)
+                  .setProducer("manual"))
+          .addRelations(
+              PlanRel.newBuilder()
+                  .setRoot(
+                      RelRoot.newBuilder()
+                          .setInput(
+                              Rel.newBuilder()
+                                  .setRead(
+                                      ReadRel.newBuilder()
+                                          .setBaseSchema(
+                                              NamedStruct.newBuilder()
+                                                  .addNames("unbounded_key")
+                                                  .addNames("large_key")
+                                                  .addNames("id")
+                                                  .setStruct(
+                                                      Type.Struct.newBuilder()
+                                                          .addTypes(
+                                                              Type.newBuilder()
+                                                                  .setI32(
+                                                                      Type.I32
+                                                                          .newBuilder()
+                                                                          .setNullability(
+                                                                              Type.Nullability
+                                                                                  .NULLABILITY_REQUIRED)))
+                                                          .addTypes(
+                                                              Type.newBuilder()
+                                                                  .setI32(
+                                                                      Type.I32
+                                                                          .newBuilder()
+                                                                          .setNullability(
+                                                                              Type.Nullability
+                                                                                  .NULLABILITY_REQUIRED)))
+                                                          .addTypes(
+                                                              Type.newBuilder()
+                                                                  .setI32(
+                                                                      Type.I32
+                                                                          .newBuilder()
+                                                                          .setNullability(
+                                                                              Type.Nullability
+                                                                                  .NULLABILITY_REQUIRED)))
+                                                          .setNullability(
+                                                              Type.Nullability
+                                                                  .NULLABILITY_REQUIRED)))
+                                          .setNamedTable(
+                                              NamedTable.newBuilder()
+                                                  .addNames("beam")
+                                                  .addNames("medium_table"))))))
+          .build();
 
   @Before
   public void prepare() {

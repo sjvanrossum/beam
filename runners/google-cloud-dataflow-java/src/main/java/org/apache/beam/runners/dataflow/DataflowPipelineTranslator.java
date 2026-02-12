@@ -360,6 +360,9 @@ public class DataflowPipelineTranslator {
         job.setType("JOB_TYPE_STREAMING");
       } else {
         job.setType("JOB_TYPE_BATCH");
+      }
+
+      if (options.getWorkerDiskType() != null) {
         workerPool.setDiskType(options.getWorkerDiskType());
       }
 

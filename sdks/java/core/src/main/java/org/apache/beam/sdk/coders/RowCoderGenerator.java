@@ -17,7 +17,10 @@
  */
 package org.apache.beam.sdk.coders;
 
+import static org.apache.beam.sdk.util.ByteBuddyUtils.emitLdcConstant;
 import static org.apache.beam.sdk.util.ByteBuddyUtils.getClassLoadingStrategy;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.getFieldDescriptor;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.pushInt;
 import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
 import java.io.EOFException;
@@ -57,7 +60,6 @@ import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.schemas.Schema.LogicalType;
 import org.apache.beam.sdk.schemas.Schema.TypeName;
 import org.apache.beam.sdk.schemas.SchemaCoder;
-import org.apache.beam.sdk.util.ByteBuddyUtils;
 import org.apache.beam.sdk.util.StringUtils;
 import org.apache.beam.sdk.util.VarInt;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
@@ -108,11 +110,6 @@ public abstract class RowCoderGenerator {
   private static final String INPUT_STREAM_DESC = Type.getDescriptor(InputStream.class);
   private static final String ROW_DESC = Type.getDescriptor(Row.class);
   private static final String OBJECT_DESC = Type.getDescriptor(Object.class);
-
-  static void emitLdcConstant(
-      MethodVisitor mv, String name, Class<?> constantType, Object value) {
-    ByteBuddyUtils.emitLdcConstant(mv, name, constantType, value);
-  }
 
   static Class<?> accessibleCoderClass(Class<?> coderClass) {
     if (Modifier.isPublic(coderClass.getModifiers())
@@ -513,16 +510,6 @@ public abstract class RowCoderGenerator {
       }
     }
     return true;
-  }
-
-  static void pushInt(MethodVisitor mv, int value) {
-    if (value >= -1 && value <= 5) {
-      mv.visitInsn(Opcodes.ICONST_0 + value);
-    } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
-      mv.visitIntInsn(Opcodes.BIPUSH, value);
-    } else {
-      mv.visitIntInsn(Opcodes.SIPUSH, value);
-    }
   }
 
   private static class EncodeInstruction implements Implementation {
@@ -1818,44 +1805,6 @@ public abstract class RowCoderGenerator {
           fieldValues[encodingPosToIndex[encodingPos]] = coders[encodingPos].decode(inputStream);
         }
       }
-    }
-  }
-
-  static String getFieldDescriptor(TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-        return "B";
-      case INT16:
-        return "S";
-      case INT32:
-        return "I";
-      case INT64:
-        return "J";
-      case FLOAT:
-        return "F";
-      case DOUBLE:
-        return "D";
-      case BOOLEAN:
-        return "Z";
-      case STRING:
-        return "Ljava/lang/String;";
-      case BYTES:
-        return "[B";
-      case DECIMAL:
-        return "Ljava/math/BigDecimal;";
-      case DATETIME:
-        return "Lorg/joda/time/ReadableInstant;";
-      case ROW:
-        return ROW_DESC;
-      case ARRAY:
-        return "Ljava/util/Collection;";
-      case ITERABLE:
-        return "Ljava/lang/Iterable;";
-      case MAP:
-        return "Ljava/util/Map;";
-      case LOGICAL_TYPE:
-      default:
-        return OBJECT_DESC;
     }
   }
 }

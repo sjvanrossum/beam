@@ -17,16 +17,24 @@
  */
 package org.apache.beam.sdk.values;
 
+import static org.apache.beam.sdk.util.ByteBuddyUtils.boxPrimitive;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.boxedDescriptor;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.boxedGetterName;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.fieldJvmType;
 import static org.apache.beam.sdk.util.ByteBuddyUtils.getClassLoadingStrategy;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.getFieldDescriptor;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.isPrimitiveField;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.primitiveGetterName;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.primitiveReturnOpcode;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.pushInt;
+import static org.apache.beam.sdk.util.ByteBuddyUtils.unboxOrCast;
 
 import java.io.ObjectStreamException;
 import java.io.Serializable;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.math.BigDecimal;
 import java.util.AbstractList;
-import java.util.Collection;
 import java.util.List;
-import java.util.Map;
 import java.util.RandomAccess;
 import java.util.concurrent.ConcurrentHashMap;
 import net.bytebuddy.ByteBuddy;
@@ -38,7 +46,9 @@ import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.VisibilityBridgeStrategy;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
 import net.bytebuddy.dynamic.scaffold.TypeValidation;
+import net.bytebuddy.implementation.FixedValue;
 import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.MethodCall;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.jar.asm.ClassWriter;
 import net.bytebuddy.jar.asm.Label;
@@ -53,7 +63,6 @@ import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.schemas.Schema.TypeName;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
 import org.checkerframework.checker.nullness.qual.Nullable;
-import org.joda.time.ReadableInstant;
 
 /**
  * Generates schema-specific {@link Row} subclasses using ByteBuddy where primitive fields are
@@ -74,9 +83,20 @@ public final class RowGenerator {
   private static final String INTERNAL_ROW_NAME = Type.getInternalName(Row.class);
   private static final String INTERNAL_GENERATOR_NAME = Type.getInternalName(RowGenerator.class);
   private static final String SCHEMA_DESC = Type.getDescriptor(Schema.class);
-  private static final String LIST_DESC = Type.getDescriptor(List.class);
-  private static final String OBJECT_ARRAY_DESC = Type.getDescriptor(Object[].class);
   private static final String OBJECT_DESC = Type.getDescriptor(Object.class);
+  private static final Method CREATE_VALUES_VIEW_METHOD;
+  private static final Method TO_SERIALIZED_ROW_METHOD;
+
+  static {
+    try {
+      CREATE_VALUES_VIEW_METHOD =
+          RowGenerator.class.getDeclaredMethod("createValuesView", Row.class);
+      TO_SERIALIZED_ROW_METHOD =
+          RowGenerator.class.getDeclaredMethod("toSerializedRow", Row.class);
+    } catch (NoSuchMethodException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
 
   /** Factory that instantiates a schema-typed {@link Row}. */
   @Internal
@@ -274,44 +294,6 @@ public final class RowGenerator {
     return Row.Equals.deepHashCode(a, row.getSchema().getField(fieldIdx).getType());
   }
 
-  static Class<?> fieldJvmType(TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-        return byte.class;
-      case INT16:
-        return short.class;
-      case INT32:
-        return int.class;
-      case INT64:
-        return long.class;
-      case FLOAT:
-        return float.class;
-      case DOUBLE:
-        return double.class;
-      case BOOLEAN:
-        return boolean.class;
-      case STRING:
-        return String.class;
-      case BYTES:
-        return byte[].class;
-      case DECIMAL:
-        return BigDecimal.class;
-      case DATETIME:
-        return ReadableInstant.class;
-      case ROW:
-        return Row.class;
-      case ARRAY:
-        return Collection.class;
-      case ITERABLE:
-        return Iterable.class;
-      case MAP:
-        return Map.class;
-      case LOGICAL_TYPE:
-      default:
-        return Object.class;
-    }
-  }
-
   static String fieldName(int idx) {
     return "f" + idx;
   }
@@ -329,7 +311,7 @@ public final class RowGenerator {
       typeNames[i] = ft.getTypeName();
       nullables[i] = ft.getNullable();
       jvmTypes[i] = fieldJvmType(typeNames[i]);
-      descriptors[i] = Type.getDescriptor(jvmTypes[i]);
+      descriptors[i] = getFieldDescriptor(typeNames[i]);
     }
 
     DynamicType.Builder<Row> rowBuilder =
@@ -358,9 +340,9 @@ public final class RowGenerator {
             .withParameters(Schema.class, Object[].class)
             .intercept(new FromArrayConstructorImplementation(fieldCount, typeNames, descriptors))
             .method(ElementMatchers.named("getFieldCount"))
-            .intercept(new GetFieldCountImplementation(fieldCount))
+            .intercept(FixedValue.value(fieldCount))
             .method(ElementMatchers.named("getValues"))
-            .intercept(new GetValuesImplementation())
+            .intercept(MethodCall.invoke(CREATE_VALUES_VIEW_METHOD).withThis())
             .method(ElementMatchers.named("isNull").and(ElementMatchers.takesArguments(int.class)))
             .intercept(new IsNullImplementation(fieldCount))
             .method(ElementMatchers.named("getValue").and(ElementMatchers.takesArguments(int.class)))
@@ -368,9 +350,9 @@ public final class RowGenerator {
             .method(ElementMatchers.named("equals").and(ElementMatchers.takesArguments(Object.class)))
             .intercept(new EqualsImplementation(fieldCount, typeNames, descriptors))
             .method(ElementMatchers.named("hashCode").and(ElementMatchers.takesNoArguments()))
-            .intercept(new HashCodeImplementation(fieldCount, typeNames, descriptors))
+            .intercept(new HashCodeImplementation(fieldCount, typeNames, nullables, descriptors))
             .defineMethod("writeReplace", Object.class, Visibility.PRIVATE)
-            .intercept(new WriteReplaceImplementation());
+            .intercept(MethodCall.invoke(TO_SERIALIZED_ROW_METHOD).withThis());
 
     for (TypeName primitiveType : PRIMITIVE_TYPES) {
       int count = 0;
@@ -414,24 +396,37 @@ public final class RowGenerator {
     String rowInternalName = Type.getInternalName(loadedRowClass);
     long allNullMask = fieldCount == 64 ? -1L : (1L << fieldCount) - 1L;
 
-    DynamicType.Builder<RowFactory> factoryBuilder =
-        BYTE_BUDDY
-            .subclass(RowFactory.class)
-            .modifiers(Visibility.PUBLIC, TypeManifestation.FINAL)
-            .method(ElementMatchers.named("create"))
-            .intercept(new FactoryCreateImplementation(rowInternalName))
-            .method(ElementMatchers.named("fromList"))
-            .intercept(new FactoryFromListImplementation(rowInternalName))
-            .method(ElementMatchers.named("fromArray"))
-            .intercept(new FactoryFromArrayImplementation(rowInternalName))
-            .method(ElementMatchers.named("captureFromList"))
-            .intercept(new FactoryCaptureFromListImplementation(rowInternalName))
-            .method(ElementMatchers.named("nullRow"))
-            .intercept(new FactoryNullRowImplementation(rowInternalName, allNullMask))
-            .method(ElementMatchers.named("rowClass"))
-            .intercept(net.bytebuddy.implementation.FixedValue.value(loadedRowClass));
-
     try {
+      DynamicType.Builder<RowFactory> factoryBuilder =
+          BYTE_BUDDY
+              .subclass(RowFactory.class)
+              .modifiers(Visibility.PUBLIC, TypeManifestation.FINAL)
+              .method(ElementMatchers.named("create"))
+              .intercept(
+                  MethodCall.construct(loadedRowClass.getDeclaredConstructor(Schema.class))
+                      .withArgument(0))
+              .method(ElementMatchers.named("fromList"))
+              .intercept(
+                  MethodCall.construct(
+                          loadedRowClass.getDeclaredConstructor(Schema.class, List.class))
+                      .withArgument(0, 1))
+              .method(ElementMatchers.named("fromArray"))
+              .intercept(
+                  MethodCall.construct(
+                          loadedRowClass.getDeclaredConstructor(Schema.class, Object[].class))
+                      .withArgument(0, 1))
+              .method(ElementMatchers.named("captureFromList"))
+              .intercept(
+                  MethodCall.construct(
+                          loadedRowClass.getDeclaredConstructor(
+                              Schema.class, List.class, boolean.class))
+                      .withArgument(0, 1)
+                      .with(true))
+              .method(ElementMatchers.named("nullRow"))
+              .intercept(new FactoryNullRowImplementation(rowInternalName, allNullMask))
+              .method(ElementMatchers.named("rowClass"))
+              .intercept(FixedValue.value(loadedRowClass));
+
       return factoryBuilder
           .visit(
               new AsmVisitorWrapper.ForDeclaredMethods()
@@ -644,72 +639,6 @@ public final class RowGenerator {
         mv.visitFieldInsn(Opcodes.PUTFIELD, owner, "nullMask", "J");
         mv.visitInsn(Opcodes.RETURN);
         return new ByteCodeAppender.Size(6, 6);
-      };
-    }
-  }
-
-  private static final class GetFieldCountImplementation implements Implementation {
-    private final int fieldCount;
-
-    GetFieldCountImplementation(int fieldCount) {
-      this.fieldCount = fieldCount;
-    }
-
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(Target implementationTarget) {
-      return (mv, context, method) -> {
-        pushInt(mv, fieldCount);
-        mv.visitInsn(Opcodes.IRETURN);
-        return new ByteCodeAppender.Size(1, 1);
-      };
-    }
-  }
-
-  private static final class GetValuesImplementation implements Implementation {
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(Target implementationTarget) {
-      return (mv, context, method) -> {
-        mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            INTERNAL_GENERATOR_NAME,
-            "createValuesView",
-            "(L" + INTERNAL_ROW_NAME + ";)" + LIST_DESC,
-            false);
-        mv.visitInsn(Opcodes.ARETURN);
-        return new ByteCodeAppender.Size(1, 1);
-      };
-    }
-  }
-
-  private static final class WriteReplaceImplementation implements Implementation {
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(Target implementationTarget) {
-      return (mv, context, method) -> {
-        mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            INTERNAL_GENERATOR_NAME,
-            "toSerializedRow",
-            "(L" + INTERNAL_ROW_NAME + ";)" + OBJECT_DESC,
-            false);
-        mv.visitInsn(Opcodes.ARETURN);
-        return new ByteCodeAppender.Size(1, 1);
       };
     }
   }
@@ -1203,11 +1132,14 @@ public final class RowGenerator {
   private static final class HashCodeImplementation implements Implementation {
     private final int fieldCount;
     private final TypeName[] typeNames;
+    private final boolean[] nullables;
     private final String[] descriptors;
 
-    HashCodeImplementation(int fieldCount, TypeName[] typeNames, String[] descriptors) {
+    HashCodeImplementation(
+        int fieldCount, TypeName[] typeNames, boolean[] nullables, String[] descriptors) {
       this.fieldCount = fieldCount;
       this.typeNames = typeNames;
+      this.nullables = nullables;
       this.descriptors = descriptors;
     }
 
@@ -1255,7 +1187,7 @@ public final class RowGenerator {
                   Opcodes.INVOKESTATIC, "java/lang/Double", "hashCode", "(D)I", false);
               break;
             case BOOLEAN:
-              {
+              if (nullables[i]) {
                 Label notNull = new Label();
                 Label doneBool = new Label();
                 mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -1273,8 +1205,13 @@ public final class RowGenerator {
                 mv.visitMethodInsn(
                     Opcodes.INVOKESTATIC, "java/lang/Boolean", "hashCode", "(Z)I", false);
                 mv.visitLabel(doneBool);
-                break;
+              } else {
+                mv.visitVarInsn(Opcodes.ALOAD, 0);
+                mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);
+                mv.visitMethodInsn(
+                    Opcodes.INVOKESTATIC, "java/lang/Boolean", "hashCode", "(Z)I", false);
               }
+              break;
             case BYTES:
               mv.visitVarInsn(Opcodes.ALOAD, 0);
               mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);
@@ -1316,126 +1253,6 @@ public final class RowGenerator {
     }
   }
 
-  private static final class FactoryCreateImplementation implements Implementation {
-    private final String rowInternalName;
-
-    FactoryCreateImplementation(String rowInternalName) {
-      this.rowInternalName = rowInternalName;
-    }
-
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(Target implementationTarget) {
-      return (mv, context, method) -> {
-        mv.visitTypeInsn(Opcodes.NEW, rowInternalName);
-        mv.visitInsn(Opcodes.DUP);
-        mv.visitVarInsn(Opcodes.ALOAD, 1);
-        mv.visitMethodInsn(
-            Opcodes.INVOKESPECIAL, rowInternalName, "<init>", "(" + SCHEMA_DESC + ")V", false);
-        mv.visitInsn(Opcodes.ARETURN);
-        return new ByteCodeAppender.Size(3, 2);
-      };
-    }
-  }
-
-  private static final class FactoryFromListImplementation implements Implementation {
-    private final String rowInternalName;
-
-    FactoryFromListImplementation(String rowInternalName) {
-      this.rowInternalName = rowInternalName;
-    }
-
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(Target implementationTarget) {
-      return (mv, context, method) -> {
-        mv.visitTypeInsn(Opcodes.NEW, rowInternalName);
-        mv.visitInsn(Opcodes.DUP);
-        mv.visitVarInsn(Opcodes.ALOAD, 1);
-        mv.visitVarInsn(Opcodes.ALOAD, 2);
-        mv.visitMethodInsn(
-            Opcodes.INVOKESPECIAL,
-            rowInternalName,
-            "<init>",
-            "(" + SCHEMA_DESC + LIST_DESC + ")V",
-            false);
-        mv.visitInsn(Opcodes.ARETURN);
-        return new ByteCodeAppender.Size(4, 3);
-      };
-    }
-  }
-
-  private static final class FactoryCaptureFromListImplementation implements Implementation {
-    private final String rowInternalName;
-
-    FactoryCaptureFromListImplementation(String rowInternalName) {
-      this.rowInternalName = rowInternalName;
-    }
-
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(Target implementationTarget) {
-      return (mv, context, method) -> {
-        mv.visitTypeInsn(Opcodes.NEW, rowInternalName);
-        mv.visitInsn(Opcodes.DUP);
-        mv.visitVarInsn(Opcodes.ALOAD, 1);
-        mv.visitVarInsn(Opcodes.ALOAD, 2);
-        mv.visitInsn(Opcodes.ICONST_1);
-        mv.visitMethodInsn(
-            Opcodes.INVOKESPECIAL,
-            rowInternalName,
-            "<init>",
-            "(" + SCHEMA_DESC + LIST_DESC + "Z)V",
-            false);
-        mv.visitInsn(Opcodes.ARETURN);
-        return new ByteCodeAppender.Size(5, 3);
-      };
-    }
-  }
-
-  private static final class FactoryFromArrayImplementation implements Implementation {
-    private final String rowInternalName;
-
-    FactoryFromArrayImplementation(String rowInternalName) {
-      this.rowInternalName = rowInternalName;
-    }
-
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(Target implementationTarget) {
-      return (mv, context, method) -> {
-        mv.visitTypeInsn(Opcodes.NEW, rowInternalName);
-        mv.visitInsn(Opcodes.DUP);
-        mv.visitVarInsn(Opcodes.ALOAD, 1);
-        mv.visitVarInsn(Opcodes.ALOAD, 2);
-        mv.visitMethodInsn(
-            Opcodes.INVOKESPECIAL,
-            rowInternalName,
-            "<init>",
-            "(" + SCHEMA_DESC + OBJECT_ARRAY_DESC + ")V",
-            false);
-        mv.visitInsn(Opcodes.ARETURN);
-        return new ByteCodeAppender.Size(4, 3);
-      };
-    }
-  }
-
   private static final class FactoryNullRowImplementation implements Implementation {
     private final String rowInternalName;
     private final long allNullMask;
@@ -1464,208 +1281,6 @@ public final class RowGenerator {
         mv.visitInsn(Opcodes.ARETURN);
         return new ByteCodeAppender.Size(4, 2);
       };
-    }
-  }
-
-  static boolean isPrimitiveField(TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-      case INT16:
-      case INT32:
-      case INT64:
-      case FLOAT:
-      case DOUBLE:
-      case BOOLEAN:
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  static void pushInt(MethodVisitor mv, int value) {
-    if (value >= -1 && value <= 5) {
-      mv.visitInsn(Opcodes.ICONST_0 + value);
-    } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
-      mv.visitIntInsn(Opcodes.BIPUSH, value);
-    } else {
-      mv.visitIntInsn(Opcodes.SIPUSH, value);
-    }
-  }
-
-  static void unboxOrCast(MethodVisitor mv, TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Byte");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Byte", "byteValue", "()B", false);
-        break;
-      case INT16:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Short");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Short", "shortValue", "()S", false);
-        break;
-      case INT32:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Integer");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Integer", "intValue", "()I", false);
-        break;
-      case INT64:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Long");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Long", "longValue", "()J", false);
-        break;
-      case FLOAT:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Float");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Float", "floatValue", "()F", false);
-        break;
-      case DOUBLE:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Double");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Double", "doubleValue", "()D", false);
-        break;
-      case BOOLEAN:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Boolean");
-        mv.visitMethodInsn(
-            Opcodes.INVOKEVIRTUAL, "java/lang/Boolean", "booleanValue", "()Z", false);
-        break;
-      case STRING:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
-        break;
-      case BYTES:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "[B");
-        break;
-      case DECIMAL:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/math/BigDecimal");
-        break;
-      case DATETIME:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "org/joda/time/ReadableInstant");
-        break;
-      case ROW:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, INTERNAL_ROW_NAME);
-        break;
-      case ARRAY:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Collection");
-        break;
-      case ITERABLE:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Iterable");
-        break;
-      case MAP:
-        mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Map");
-        break;
-      case LOGICAL_TYPE:
-      default:
-        break;
-    }
-  }
-
-  static void boxPrimitive(MethodVisitor mv, TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, "java/lang/Byte", "valueOf", "(B)Ljava/lang/Byte;", false);
-        break;
-      case INT16:
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, "java/lang/Short", "valueOf", "(S)Ljava/lang/Short;", false);
-        break;
-      case INT32:
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
-        break;
-      case INT64:
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, "java/lang/Long", "valueOf", "(J)Ljava/lang/Long;", false);
-        break;
-      case FLOAT:
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, "java/lang/Float", "valueOf", "(F)Ljava/lang/Float;", false);
-        break;
-      case DOUBLE:
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, "java/lang/Double", "valueOf", "(D)Ljava/lang/Double;", false);
-        break;
-      case BOOLEAN:
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, "java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;", false);
-        break;
-      default:
-        throw new IllegalArgumentException("Not a primitive type: " + typeName);
-    }
-  }
-
-  static String primitiveGetterName(TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-        return "getPrimitiveByte";
-      case INT16:
-        return "getPrimitiveInt16";
-      case INT32:
-        return "getPrimitiveInt32";
-      case INT64:
-        return "getPrimitiveInt64";
-      case FLOAT:
-        return "getPrimitiveFloat";
-      case DOUBLE:
-        return "getPrimitiveDouble";
-      case BOOLEAN:
-        return "getPrimitiveBoolean";
-      default:
-        throw new IllegalArgumentException("Not a primitive type: " + typeName);
-    }
-  }
-
-  static String boxedGetterName(TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-        return "getByte";
-      case INT16:
-        return "getInt16";
-      case INT32:
-        return "getInt32";
-      case INT64:
-        return "getInt64";
-      case FLOAT:
-        return "getFloat";
-      case DOUBLE:
-        return "getDouble";
-      case BOOLEAN:
-        return "getBoolean";
-      default:
-        throw new IllegalArgumentException("Not a primitive type: " + typeName);
-    }
-  }
-
-  static String boxedDescriptor(TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-        return "Ljava/lang/Byte;";
-      case INT16:
-        return "Ljava/lang/Short;";
-      case INT32:
-        return "Ljava/lang/Integer;";
-      case INT64:
-        return "Ljava/lang/Long;";
-      case FLOAT:
-        return "Ljava/lang/Float;";
-      case DOUBLE:
-        return "Ljava/lang/Double;";
-      case BOOLEAN:
-        return "Ljava/lang/Boolean;";
-      default:
-        throw new IllegalArgumentException("Not a primitive type: " + typeName);
-    }
-  }
-
-  static int primitiveReturnOpcode(TypeName typeName) {
-    switch (typeName) {
-      case BYTE:
-      case INT16:
-      case INT32:
-      case BOOLEAN:
-        return Opcodes.IRETURN;
-      case INT64:
-        return Opcodes.LRETURN;
-      case FLOAT:
-        return Opcodes.FRETURN;
-      case DOUBLE:
-        return Opcodes.DRETURN;
-      default:
-        throw new IllegalArgumentException("Not a primitive type: " + typeName);
     }
   }
 }

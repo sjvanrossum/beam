@@ -539,11 +539,16 @@ public class POJOUtils {
 
     @Override
     public ByteCodeAppender appender(final Target implementationTarget) {
-      return (methodVisitor, implementationContext, instrumentedMethod) -> {
-        // this + method parameters.
-        int numLocals = 1 + instrumentedMethod.getParameters().size();
+      return buildAppender(false);
+    }
 
-        // Create the POJO class.
+    public Implementation fromRowImplementation() {
+      return new Implementation.Simple(buildAppender(true));
+    }
+
+    private ByteCodeAppender buildAppender(boolean fromRow) {
+      return (methodVisitor, implementationContext, instrumentedMethod) -> {
+        int numLocals = 1 + instrumentedMethod.getParameters().size();
         ForLoadedType loadedType = new ForLoadedType(pojoClass);
         StackManipulation stackManipulation =
             new StackManipulation.Compound(
@@ -555,86 +560,21 @@ public class POJOUtils {
                         .filter(
                             ElementMatchers.isConstructor().and(ElementMatchers.takesArguments(0)))
                         .getOnly()));
-
-        // The types in the POJO might be the types returned by Beam's Row class,
-        // so we have to convert the types used by Beam's Row class.
-        TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
         for (int i = 0; i < typeInformations.size(); ++i) {
           FieldValueTypeInformation typeInformation = typeInformations.get(i);
           Field field = typeInformation.getField();
-
-          ForLoadedType convertedType =
-              new ForLoadedType((Class) convertType.convert(typeInformation.getType()));
-
-          // The instruction to read the parameter.
-          StackManipulation readParameter =
-              new StackManipulation.Compound(
-                  MethodVariableAccess.REFERENCE.loadFrom(1),
-                  IntegerConstant.forValue(i),
-                  ArrayAccess.REFERENCE.load(),
-                  TypeCasting.to(convertedType));
-
           StackManipulation updateField =
               new StackManipulation.Compound(
-                  // Duplicate object reference.
                   Duplication.SINGLE,
-                  // Do any conversions necessary.
-                  typeConversionsFactory
-                      .createSetterConversions(readParameter)
-                      .convert(typeInformation.getType()),
-                  // Now update the field.
+                  ByteBuddyUtils.readAndConvertParameter(
+                      typeInformation, i, typeConversionsFactory, fromRow),
                   FieldAccess.forField(new ForLoadedField(field)).write());
           stackManipulation = new StackManipulation.Compound(stackManipulation, updateField);
         }
         stackManipulation =
             new StackManipulation.Compound(stackManipulation, MethodReturn.REFERENCE);
-
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new Size(size.getMaximalSize(), numLocals);
-      };
-    }
-
-    public Implementation fromRowImplementation() {
-      return new Implementation() {
-        @Override
-        public InstrumentedType prepare(InstrumentedType instrumentedType) {
-          return instrumentedType;
-        }
-
-        @Override
-        public ByteCodeAppender appender(Target implementationTarget) {
-          return (methodVisitor, implementationContext, instrumentedMethod) -> {
-            int numLocals = 1 + instrumentedMethod.getParameters().size();
-            ForLoadedType loadedType = new ForLoadedType(pojoClass);
-            StackManipulation stackManipulation =
-                new StackManipulation.Compound(
-                    TypeCreation.of(loadedType),
-                    Duplication.SINGLE,
-                    MethodInvocation.invoke(
-                        loadedType
-                            .getDeclaredMethods()
-                            .filter(
-                                ElementMatchers.isConstructor()
-                                    .and(ElementMatchers.takesArguments(0)))
-                            .getOnly()));
-            for (int i = 0; i < typeInformations.size(); ++i) {
-              FieldValueTypeInformation typeInformation = typeInformations.get(i);
-              Field field = typeInformation.getField();
-              StackManipulation updateField =
-                  new StackManipulation.Compound(
-                      Duplication.SINGLE,
-                      ByteBuddyUtils.readAndConvertRowField(
-                          typeInformation, i, typeConversionsFactory),
-                      FieldAccess.forField(new ForLoadedField(field)).write());
-              stackManipulation = new StackManipulation.Compound(stackManipulation, updateField);
-            }
-            stackManipulation =
-                new StackManipulation.Compound(stackManipulation, MethodReturn.REFERENCE);
-            StackManipulation.Size size =
-                stackManipulation.apply(methodVisitor, implementationContext);
-            return new Size(size.getMaximalSize(), numLocals);
-          };
-        }
       };
     }
   }

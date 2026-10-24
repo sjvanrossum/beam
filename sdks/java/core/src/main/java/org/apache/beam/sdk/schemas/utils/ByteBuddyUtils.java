@@ -249,6 +249,34 @@ public class ByteBuddyUtils {
   }
 
   /**
+   * Returns a {@link StackManipulation} that reads parameter {@code fieldIndex} either from the
+   * {@link org.apache.beam.sdk.values.Row} in local 1 (when {@code fromRow} is true) or from the
+   * {@code Object[]} in local 1 (when {@code fromRow} is false), and converts it to the target Java
+   * field type.
+   */
+  public static StackManipulation readAndConvertParameter(
+      FieldValueTypeInformation fieldType,
+      int fieldIndex,
+      TypeConversionsFactory typeConversionsFactory,
+      boolean fromRow) {
+    if (fromRow) {
+      return readAndConvertRowField(fieldType, fieldIndex, typeConversionsFactory);
+    }
+    TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
+    ForLoadedType convertedType =
+        new ForLoadedType((Class) convertType.convert(fieldType.getType()));
+    StackManipulation readParameter =
+        new StackManipulation.Compound(
+            MethodVariableAccess.REFERENCE.loadFrom(1),
+            IntegerConstant.forValue(fieldIndex),
+            ArrayAccess.REFERENCE.load(),
+            TypeCasting.to(convertedType));
+    return typeConversionsFactory
+        .createSetterConversions(readParameter)
+        .convert(fieldType.getType());
+  }
+
+  /**
    * Returns a {@link StackManipulation} that reads field {@code fieldIndex} from the {@link
    * org.apache.beam.sdk.values.Row} in local variable 1 (applying the converter from {@code
    * Function[] fieldConverters} in local variable 2 for non-primitive fields) and converts it to
@@ -1793,72 +1821,30 @@ public class ByteBuddyUtils {
 
     @Override
     public ByteCodeAppender appender(final Target implementationTarget) {
+      return buildAppender(false);
+    }
+
+    public Implementation fromRowImplementation() {
+      return new Implementation.Simple(buildAppender(true));
+    }
+
+    private ByteCodeAppender buildAppender(boolean fromRow) {
       return (methodVisitor, implementationContext, instrumentedMethod) -> {
-        // this + method parameters.
         int numLocals = 1 + instrumentedMethod.getParameters().size();
-
         StackManipulation stackManipulation = beforePushingParameters();
-
-        // Push all creator parameters on the stack.
-        TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
         for (int i = 0; i < parameters.size(); i++) {
-          FieldValueTypeInformation fieldType =
-              fields.get(Preconditions.checkStateNotNull(fieldMapping.get(i)));
-          ForLoadedType convertedType =
-              new ForLoadedType((Class) convertType.convert(fieldType.getType()));
-
-          // The instruction to read the parameter. Use the fieldMapping to reorder parameters as
-          // necessary.
-          StackManipulation readParameter =
-              new StackManipulation.Compound(
-                  MethodVariableAccess.REFERENCE.loadFrom(1),
-                  IntegerConstant.forValue(Preconditions.checkStateNotNull(fieldMapping.get(i))),
-                  ArrayAccess.REFERENCE.load(),
-                  TypeCasting.to(convertedType));
+          int fieldIndex = Preconditions.checkStateNotNull(fieldMapping.get(i));
+          FieldValueTypeInformation fieldType = fields.get(fieldIndex);
           stackManipulation =
               new StackManipulation.Compound(
                   stackManipulation,
-                  typeConversionsFactory
-                      .createSetterConversions(readParameter)
-                      .convert(fieldType.getType()));
+                  readAndConvertParameter(fieldType, fieldIndex, typeConversionsFactory, fromRow));
         }
         stackManipulation =
             new StackManipulation.Compound(
                 stackManipulation, afterPushingParameters(), MethodReturn.REFERENCE);
-
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new ByteCodeAppender.Size(size.getMaximalSize(), numLocals);
-      };
-    }
-
-    public Implementation fromRowImplementation() {
-      return new Implementation() {
-        @Override
-        public InstrumentedType prepare(InstrumentedType instrumentedType) {
-          return instrumentedType;
-        }
-
-        @Override
-        public ByteCodeAppender appender(Target implementationTarget) {
-          return (methodVisitor, implementationContext, instrumentedMethod) -> {
-            int numLocals = 1 + instrumentedMethod.getParameters().size();
-            StackManipulation stackManipulation = beforePushingParameters();
-            for (int i = 0; i < parameters.size(); i++) {
-              int fieldIndex = Preconditions.checkStateNotNull(fieldMapping.get(i));
-              FieldValueTypeInformation fieldType = fields.get(fieldIndex);
-              stackManipulation =
-                  new StackManipulation.Compound(
-                      stackManipulation,
-                      readAndConvertRowField(fieldType, fieldIndex, typeConversionsFactory));
-            }
-            stackManipulation =
-                new StackManipulation.Compound(
-                    stackManipulation, afterPushingParameters(), MethodReturn.REFERENCE);
-            StackManipulation.Size size =
-                stackManipulation.apply(methodVisitor, implementationContext);
-            return new ByteCodeAppender.Size(size.getMaximalSize(), numLocals);
-          };
-        }
       };
     }
 

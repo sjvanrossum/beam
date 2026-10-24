@@ -698,9 +698,16 @@ public class JavaBeanUtils {
 
     @Override
     public ByteCodeAppender appender(final Target implementationTarget) {
+      return buildAppender(false);
+    }
+
+    public Implementation fromRowImplementation() {
+      return new Implementation.Simple(buildAppender(true));
+    }
+
+    private ByteCodeAppender buildAppender(boolean fromRow) {
       return (methodVisitor, implementationContext, instrumentedMethod) -> {
         int numLocals = 1 + instrumentedMethod.getParameters().size();
-
         ForLoadedType loadedType = new ForLoadedType(beanClass);
         StackManipulation stackManipulation =
             new StackManipulation.Compound(
@@ -712,31 +719,17 @@ public class JavaBeanUtils {
                         .filter(
                             ElementMatchers.isConstructor().and(ElementMatchers.takesArguments(0)))
                         .getOnly()));
-
-        TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
         for (int i = 0; i < typeInformations.size(); ++i) {
           FieldValueTypeInformation typeInformation = typeInformations.get(i);
           Method method =
               Preconditions.checkStateNotNull(
                   typeInformation.getMethod(), SETTER_WITH_NULL_METHOD_ERROR);
           boolean setterMethodReturnsVoid = method.getReturnType().equals(Void.TYPE);
-
-          ForLoadedType convertedType =
-              new ForLoadedType((Class) convertType.convert(typeInformation.getType()));
-
-          StackManipulation readParameter =
-              new StackManipulation.Compound(
-                  MethodVariableAccess.REFERENCE.loadFrom(1),
-                  IntegerConstant.forValue(i),
-                  ArrayAccess.REFERENCE.load(),
-                  TypeCasting.to(convertedType));
-
           StackManipulation invokeSetter =
               new StackManipulation.Compound(
                   Duplication.SINGLE,
-                  typeConversionsFactory
-                      .createSetterConversions(readParameter)
-                      .convert(typeInformation.getType()),
+                  ByteBuddyUtils.readAndConvertParameter(
+                      typeInformation, i, typeConversionsFactory, fromRow),
                   MethodInvocation.invoke(new ForLoadedMethod(method)));
           if (!setterMethodReturnsVoid) {
             invokeSetter = new StackManipulation.Compound(invokeSetter, Removal.SINGLE);
@@ -745,59 +738,8 @@ public class JavaBeanUtils {
         }
         stackManipulation =
             new StackManipulation.Compound(stackManipulation, MethodReturn.REFERENCE);
-
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new Size(size.getMaximalSize(), numLocals);
-      };
-    }
-
-    public Implementation fromRowImplementation() {
-      return new Implementation() {
-        @Override
-        public InstrumentedType prepare(InstrumentedType instrumentedType) {
-          return instrumentedType;
-        }
-
-        @Override
-        public ByteCodeAppender appender(Target implementationTarget) {
-          return (methodVisitor, implementationContext, instrumentedMethod) -> {
-            int numLocals = 1 + instrumentedMethod.getParameters().size();
-            ForLoadedType loadedType = new ForLoadedType(beanClass);
-            StackManipulation stackManipulation =
-                new StackManipulation.Compound(
-                    TypeCreation.of(loadedType),
-                    Duplication.SINGLE,
-                    MethodInvocation.invoke(
-                        loadedType
-                            .getDeclaredMethods()
-                            .filter(
-                                ElementMatchers.isConstructor()
-                                    .and(ElementMatchers.takesArguments(0)))
-                            .getOnly()));
-            for (int i = 0; i < typeInformations.size(); ++i) {
-              FieldValueTypeInformation typeInformation = typeInformations.get(i);
-              Method method =
-                  Preconditions.checkStateNotNull(
-                      typeInformation.getMethod(), SETTER_WITH_NULL_METHOD_ERROR);
-              boolean setterMethodReturnsVoid = method.getReturnType().equals(Void.TYPE);
-              StackManipulation invokeSetter =
-                  new StackManipulation.Compound(
-                      Duplication.SINGLE,
-                      ByteBuddyUtils.readAndConvertRowField(
-                          typeInformation, i, typeConversionsFactory),
-                      MethodInvocation.invoke(new ForLoadedMethod(method)));
-              if (!setterMethodReturnsVoid) {
-                invokeSetter = new StackManipulation.Compound(invokeSetter, Removal.SINGLE);
-              }
-              stackManipulation = new StackManipulation.Compound(stackManipulation, invokeSetter);
-            }
-            stackManipulation =
-                new StackManipulation.Compound(stackManipulation, MethodReturn.REFERENCE);
-            StackManipulation.Size size =
-                stackManipulation.apply(methodVisitor, implementationContext);
-            return new Size(size.getMaximalSize(), numLocals);
-          };
-        }
       };
     }
   }

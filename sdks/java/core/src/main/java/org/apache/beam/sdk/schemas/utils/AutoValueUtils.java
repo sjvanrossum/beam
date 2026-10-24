@@ -333,12 +333,18 @@ public class AutoValueUtils {
 
     @Override
     public ByteCodeAppender appender(final Target implementationTarget) {
+      return buildAppender(false);
+    }
+
+    public Implementation fromRowImplementation() {
+      return new Implementation.Simple(buildAppender(true));
+    }
+
+    private ByteCodeAppender buildAppender(boolean fromRow) {
       TypeConversionsFactory typeConversionsFactory = new DefaultTypeConversionsFactory();
       ForLoadedType loadedBuilder = new ForLoadedType(builderClass);
       return (methodVisitor, implementationContext, instrumentedMethod) -> {
-        // this + method parameters.
         int numLocals = 1 + instrumentedMethod.getParameters().size();
-
         StackManipulation stackManipulation =
             new StackManipulation.Compound(
                 TypeCreation.of(loadedBuilder),
@@ -349,89 +355,25 @@ public class AutoValueUtils {
                         .filter(
                             ElementMatchers.isConstructor().and(ElementMatchers.takesArguments(0)))
                         .getOnly()));
-
-        TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
         for (int i = 0; i < setters.size(); ++i) {
           FieldValueTypeInformation setterType = setters.get(i);
           Method setterMethod = Preconditions.checkStateNotNull(setterType.getMethod());
-          ForLoadedType convertedType =
-              new ForLoadedType((Class) convertType.convert(setterType.getType()));
-
-          StackManipulation readParameter =
-              new StackManipulation.Compound(
-                  MethodVariableAccess.REFERENCE.loadFrom(1),
-                  IntegerConstant.forValue(i),
-                  ArrayAccess.REFERENCE.load(),
-                  TypeCasting.to(convertedType));
-
           stackManipulation =
               new StackManipulation.Compound(
                   stackManipulation,
                   Duplication.SINGLE,
-                  typeConversionsFactory
-                      .createSetterConversions(readParameter)
-                      .convert(setterType.getType()),
+                  ByteBuddyUtils.readAndConvertParameter(
+                      setterType, i, typeConversionsFactory, fromRow),
                   MethodInvocation.invoke(new ForLoadedMethod(setterMethod)),
                   Removal.SINGLE);
         }
-
         stackManipulation =
             new StackManipulation.Compound(
                 stackManipulation,
                 MethodInvocation.invoke(new ForLoadedMethod(buildMethod)),
                 MethodReturn.REFERENCE);
-
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new Size(size.getMaximalSize(), numLocals);
-      };
-    }
-
-    public Implementation fromRowImplementation() {
-      TypeConversionsFactory typeConversionsFactory = new DefaultTypeConversionsFactory();
-      ForLoadedType loadedBuilder = new ForLoadedType(builderClass);
-      return new Implementation() {
-        @Override
-        public InstrumentedType prepare(InstrumentedType instrumentedType) {
-          return instrumentedType;
-        }
-
-        @Override
-        public ByteCodeAppender appender(Target implementationTarget) {
-          return (methodVisitor, implementationContext, instrumentedMethod) -> {
-            int numLocals = 1 + instrumentedMethod.getParameters().size();
-            StackManipulation stackManipulation =
-                new StackManipulation.Compound(
-                    TypeCreation.of(loadedBuilder),
-                    Duplication.SINGLE,
-                    MethodInvocation.invoke(
-                        loadedBuilder
-                            .getDeclaredMethods()
-                            .filter(
-                                ElementMatchers.isConstructor()
-                                    .and(ElementMatchers.takesArguments(0)))
-                            .getOnly()));
-            for (int i = 0; i < setters.size(); ++i) {
-              FieldValueTypeInformation setterType = setters.get(i);
-              Method setterMethod = Preconditions.checkStateNotNull(setterType.getMethod());
-              stackManipulation =
-                  new StackManipulation.Compound(
-                      stackManipulation,
-                      Duplication.SINGLE,
-                      ByteBuddyUtils.readAndConvertRowField(
-                          setterType, i, typeConversionsFactory),
-                      MethodInvocation.invoke(new ForLoadedMethod(setterMethod)),
-                      Removal.SINGLE);
-            }
-            stackManipulation =
-                new StackManipulation.Compound(
-                    stackManipulation,
-                    MethodInvocation.invoke(new ForLoadedMethod(buildMethod)),
-                    MethodReturn.REFERENCE);
-            StackManipulation.Size size =
-                stackManipulation.apply(methodVisitor, implementationContext);
-            return new Size(size.getMaximalSize(), numLocals);
-          };
-        }
       };
     }
   }

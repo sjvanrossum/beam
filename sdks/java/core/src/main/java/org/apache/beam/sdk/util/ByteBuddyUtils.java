@@ -17,47 +17,42 @@
  */
 package org.apache.beam.sdk.util;
 
-import static java.util.Objects.requireNonNull;
-
-import java.lang.reflect.Method;
+import java.lang.invoke.MethodHandles;
 import net.bytebuddy.dynamic.loading.ClassInjector;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
 
 /** Utilities for working with Byte Buddy. */
 public final class ByteBuddyUtils {
+  private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
+
   private ByteBuddyUtils() {} // Non-instantiable
 
-  /** Returns a class loading strategy that is compatible with Java 17+. */
+  /** Returns a class loading strategy that is compatible with Java 11+. */
   public static ClassLoadingStrategy<ClassLoader> getClassLoadingStrategy(Class<?> targetClass) {
-    ClassLoadingStrategy<ClassLoader> strategy;
     ClassLoader classLoader = ReflectHelpers.findClassLoader(targetClass);
     // Use a Lookup-based strategy for user classes for compatibility with Java 17+, but use
     // a legacy strategy to allow proxying some built-in JDK classes (e.g. interfaces, public
     // abstract classes) since we don't have permissions to get a private lookup for the
     // java.base module
     boolean systemClass = classLoader == null;
-    if (ClassInjector.UsingLookup.isAvailable() && !systemClass) {
+    if (!systemClass) {
       try {
-        Class<?> methodHandles = Class.forName("java.lang.invoke.MethodHandles", true, classLoader);
-        @SuppressWarnings("nullness") // MethodHandles#lookup accepts null
-        Object lookup = methodHandles.getMethod("lookup").invoke(null);
-        Class<?> lookupClass =
-            Class.forName("java.lang.invoke.MethodHandles$Lookup", true, classLoader);
-        Method privateLookupIn =
-            methodHandles.getMethod("privateLookupIn", Class.class, lookupClass);
-        @SuppressWarnings("nullness") // this is a static method, the receiver can be null
-        Object privateLookup = requireNonNull(privateLookupIn.invoke(null, targetClass, lookup));
-        strategy = ClassLoadingStrategy.UsingLookup.of(requireNonNull(privateLookup));
-      } catch (ReflectiveOperationException e) {
+        Module thisModule = ByteBuddyUtils.class.getModule();
+        Module targetModule = targetClass.getModule();
+        if (!thisModule.canRead(targetModule)) {
+          thisModule.addReads(targetModule);
+        }
+        return ClassLoadingStrategy.UsingLookup.of(
+            MethodHandles.privateLookupIn(targetClass, LOOKUP));
+      } catch (IllegalAccessException e) {
         throw new IllegalStateException(
             "No code generation strategy available " + targetClass + " " + classLoader, e);
       }
     } else if (ClassInjector.UsingReflection.isAvailable()) {
-      strategy = ClassLoadingStrategy.Default.INJECTION;
+      return ClassLoadingStrategy.Default.INJECTION;
     } else {
       throw new IllegalStateException("No code generation strategy available");
     }
-    return strategy;
   }
 }

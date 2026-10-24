@@ -30,7 +30,9 @@ import java.util.Map;
 import java.util.RandomAccess;
 import java.util.concurrent.ConcurrentHashMap;
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.ClassFileVersion;
 import net.bytebuddy.asm.AsmVisitorWrapper;
+import net.bytebuddy.description.modifier.TypeManifestation;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
@@ -62,7 +64,7 @@ import org.joda.time.ReadableInstant;
   "rawtypes"
 })
 public final class RowGenerator {
-  private static final ByteBuddy BYTE_BUDDY = new ByteBuddy();
+  private static final ByteBuddy BYTE_BUDDY = new ByteBuddy(ClassFileVersion.JAVA_V11);
   private static final String INTERNAL_ROW_NAME = Type.getInternalName(Row.class);
   private static final String INTERNAL_GENERATOR_NAME = Type.getInternalName(RowGenerator.class);
   private static final String SCHEMA_DESC = Type.getDescriptor(Schema.class);
@@ -318,7 +320,7 @@ public final class RowGenerator {
     DynamicType.Builder<Row> rowBuilder =
         BYTE_BUDDY
             .subclass(Row.class)
-            .modifiers(Visibility.PUBLIC)
+            .modifiers(Visibility.PUBLIC, TypeManifestation.FINAL)
             .defineField("nullMask", long.class, Visibility.PUBLIC);
 
     for (int i = 0; i < fieldCount; i++) {
@@ -370,7 +372,7 @@ public final class RowGenerator {
     DynamicType.Builder<RowFactory> factoryBuilder =
         BYTE_BUDDY
             .subclass(RowFactory.class)
-            .modifiers(Visibility.PUBLIC)
+            .modifiers(Visibility.PUBLIC, TypeManifestation.FINAL)
             .method(ElementMatchers.named("create"))
             .intercept(new FactoryCreateImplementation(rowInternalName))
             .method(ElementMatchers.named("fromList"))

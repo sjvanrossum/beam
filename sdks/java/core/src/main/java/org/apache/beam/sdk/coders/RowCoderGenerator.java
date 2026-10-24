@@ -24,6 +24,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.invoke.MethodHandles;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
@@ -31,28 +32,23 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.ClassFileVersion;
 import net.bytebuddy.asm.AsmVisitorWrapper;
-import net.bytebuddy.description.modifier.FieldManifestation;
-import net.bytebuddy.description.modifier.Ownership;
+import net.bytebuddy.description.modifier.TypeManifestation;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.description.type.TypeDescription;
-import net.bytebuddy.description.type.TypeDescription.ForLoadedType;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
-import net.bytebuddy.implementation.FixedValue;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
-import net.bytebuddy.implementation.bytecode.ByteCodeAppender.Size;
-import net.bytebuddy.implementation.bytecode.Duplication;
-import net.bytebuddy.implementation.bytecode.StackManipulation;
-import net.bytebuddy.implementation.bytecode.member.FieldAccess;
-import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
-import net.bytebuddy.implementation.bytecode.member.MethodReturn;
-import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
 import net.bytebuddy.jar.asm.ClassWriter;
+import net.bytebuddy.jar.asm.ConstantDynamic;
+import net.bytebuddy.jar.asm.Handle;
 import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
@@ -61,6 +57,7 @@ import net.bytebuddy.matcher.ElementMatchers;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.Schema.Field;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
+import org.apache.beam.sdk.schemas.Schema.LogicalType;
 import org.apache.beam.sdk.schemas.Schema.TypeName;
 import org.apache.beam.sdk.schemas.SchemaCoder;
 import org.apache.beam.sdk.util.StringUtils;
@@ -90,27 +87,66 @@ import org.slf4j.LoggerFactory;
   "rawtypes"
 })
 public abstract class RowCoderGenerator {
-  private static final ByteBuddy BYTE_BUDDY = new ByteBuddy();
+  private static final ByteBuddy BYTE_BUDDY = new ByteBuddy(ClassFileVersion.JAVA_V11);
   private static final BitSetCoder NULL_LIST_CODER = BitSetCoder.of();
   private static final StringUtf8Coder STRING_CODER = StringUtf8Coder.of();
   private static final ByteArrayCoder BYTE_ARRAY_CODER = ByteArrayCoder.of();
   private static final BigDecimalCoder BIG_DECIMAL_CODER = BigDecimalCoder.of();
 
-  private static final String CODERS_FIELD_NAME = "FIELD_CODERS";
-  private static final String POSITIONS_FIELD_NAME = "FIELD_ENCODING_POSITIONS";
   private static final String SCHEMA_OPTION_STATIC_ENCODING = "beam:option:row:static_encoding";
 
   private static final String INTERNAL_GENERATOR_NAME = Type.getInternalName(RowCoderGenerator.class);
   private static final String INTERNAL_ROW_NAME = Type.getInternalName(Row.class);
-  private static final String INTERNAL_CODER_NAME = Type.getInternalName(Coder.class);
   private static final String INTERNAL_VARINT_NAME = Type.getInternalName(VarInt.class);
   private static final String SCHEMA_DESC = Type.getDescriptor(Schema.class);
+  private static final String LOGICAL_TYPE_DESC = Type.getDescriptor(LogicalType.class);
   private static final String CODER_ARRAY_DESC = Type.getDescriptor(Coder[].class);
   private static final String INT_ARRAY_DESC = Type.getDescriptor(int[].class);
   private static final String OUTPUT_STREAM_DESC = Type.getDescriptor(OutputStream.class);
   private static final String INPUT_STREAM_DESC = Type.getDescriptor(InputStream.class);
   private static final String ROW_DESC = Type.getDescriptor(Row.class);
   private static final String OBJECT_DESC = Type.getDescriptor(Object.class);
+
+  private static final ConcurrentHashMap<Integer, Object> CONSTANTS = new ConcurrentHashMap<>();
+  private static final AtomicInteger NEXT_CONSTANT_ID = new AtomicInteger();
+
+  private static final Handle BOOTSTRAP_CONSTANT_HANDLE =
+      new Handle(
+          Opcodes.H_INVOKESTATIC,
+          INTERNAL_GENERATOR_NAME,
+          "bootstrapConstant",
+          "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;I)Ljava/lang/Object;",
+          false);
+
+  static int registerConstant(Object value) {
+    int id = NEXT_CONSTANT_ID.getAndIncrement();
+    CONSTANTS.put(id, value);
+    return id;
+  }
+
+  public static Object bootstrapConstant(
+      MethodHandles.Lookup lookup, String name, Class<?> type, int id) {
+    return CONSTANTS.get(id);
+  }
+
+  static void emitLdcConstant(
+      MethodVisitor mv, String name, Class<?> constantType, Object value) {
+    int id = registerConstant(value);
+    mv.visitLdcInsn(
+        new ConstantDynamic(
+            name,
+            Type.getDescriptor(constantType),
+            BOOTSTRAP_CONSTANT_HANDLE,
+            id));
+  }
+
+  static Class<?> accessibleCoderClass(Class<?> coderClass) {
+    if (Modifier.isPublic(coderClass.getModifiers())
+        || coderClass.getPackage() == Coder.class.getPackage()) {
+      return coderClass;
+    }
+    return Coder.class;
+  }
 
   static class WithStackTrace<T> {
     private final T value;
@@ -192,6 +228,7 @@ public abstract class RowCoderGenerator {
   static void clearRowCoderCache() {
     synchronized (cacheLock) {
       GENERATED_CODERS.clear();
+      CONSTANTS.clear();
     }
   }
 
@@ -229,24 +266,23 @@ public abstract class RowCoderGenerator {
         int rowIndex = encodingPosToRowIndex[i];
         // We use withNullable(false) as nulls are handled by the RowCoder and the individual
         // component coders therefore do not need to handle nulls.
-        componentCoders[i] =
-            SchemaCoder.coderForFieldType(schema.getField(rowIndex).getType().withNullable(false));
+        FieldType fieldType = schema.getField(rowIndex).getType().withNullable(false);
+        if (fieldType.getTypeName() == TypeName.ROW) {
+          Schema nestedSchema = SchemaCoder.of(fieldType.getRowSchema()).getSchema();
+          componentCoders[i] = generate(nestedSchema);
+        } else {
+          componentCoders[i] = SchemaCoder.coderForFieldType(fieldType);
+        }
       }
 
       TypeDescription.Generic coderType =
           TypeDescription.Generic.Builder.parameterizedType(Coder.class, Row.class).build();
       DynamicType.Builder<Coder> builder =
-          (DynamicType.Builder<Coder>) BYTE_BUDDY.subclass(coderType);
-      builder =
-          builder
-              .defineField(
-                  CODERS_FIELD_NAME, Coder[].class, Visibility.PRIVATE, FieldManifestation.FINAL)
-              .defineField(
-                  POSITIONS_FIELD_NAME, int[].class, Visibility.PRIVATE, FieldManifestation.FINAL)
-              .defineConstructor(Modifier.PUBLIC)
-              .withParameters(Coder[].class, int[].class)
-              .intercept(new GeneratedCoderConstructor());
-      builder = implementMethods(schema, encodingPosToRowIndex, builder);
+          (DynamicType.Builder<Coder>)
+              BYTE_BUDDY
+                  .subclass(coderType)
+                  .modifiers(Visibility.PUBLIC, TypeManifestation.FINAL);
+      builder = implementMethods(schema, componentCoders, encodingPosToRowIndex, builder);
 
       Coder<Row> rowCoder;
       try {
@@ -260,8 +296,8 @@ public abstract class RowCoderGenerator {
                     ReflectHelpers.findClassLoader(Coder.class.getClassLoader()),
                     getClassLoadingStrategy(Coder.class))
                 .getLoaded()
-                .getDeclaredConstructor(Coder[].class, int[].class)
-                .newInstance((Object) componentCoders, (Object) encodingPosToRowIndex);
+                .getDeclaredConstructor()
+                .newInstance();
       } catch (InstantiationException
           | IllegalAccessException
           | NoSuchMethodException
@@ -279,55 +315,11 @@ public abstract class RowCoderGenerator {
     }
   }
 
-  private static class GeneratedCoderConstructor implements Implementation {
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      return instrumentedType;
-    }
-
-    @Override
-    public ByteCodeAppender appender(final Target implementationTarget) {
-      return (methodVisitor, implementationContext, instrumentedMethod) -> {
-        int numLocals = 1 + instrumentedMethod.getParameters().size();
-        StackManipulation stackManipulation =
-            new StackManipulation.Compound(
-                // Call the base constructor.
-                MethodVariableAccess.loadThis(),
-                Duplication.SINGLE,
-                MethodInvocation.invoke(
-                    new ForLoadedType(Coder.class)
-                        .getDeclaredMethods()
-                        .filter(
-                            ElementMatchers.isConstructor().and(ElementMatchers.takesArguments(0)))
-                        .getOnly()),
-                Duplication.SINGLE,
-                // Store the list of Coders as a member variable.
-                MethodVariableAccess.REFERENCE.loadFrom(1),
-                FieldAccess.forField(
-                        implementationTarget
-                            .getInstrumentedType()
-                            .getDeclaredFields()
-                            .filter(ElementMatchers.named(CODERS_FIELD_NAME))
-                            .getOnly())
-                    .write(),
-                // Store the list of encoding offsets as a member variable.
-                MethodVariableAccess.REFERENCE.loadFrom(2),
-                FieldAccess.forField(
-                        implementationTarget
-                            .getInstrumentedType()
-                            .getDeclaredFields()
-                            .filter(ElementMatchers.named(POSITIONS_FIELD_NAME))
-                            .getOnly())
-                    .write(),
-                MethodReturn.VOID);
-        StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
-        return new Size(size.getMaximalSize(), numLocals);
-      };
-    }
-  }
-
   private static DynamicType.Builder<Coder> implementMethods(
-      Schema schema, int[] encodingPosToRowIndex, DynamicType.Builder<Coder> builder) {
+      Schema schema,
+      Coder[] componentCoders,
+      int[] encodingPosToRowIndex,
+      DynamicType.Builder<Coder> builder) {
     boolean hasNullableFields =
         schema.getFields().stream().map(Field::getType).anyMatch(FieldType::getNullable);
     boolean staticEncoding =
@@ -338,22 +330,20 @@ public abstract class RowCoderGenerator {
         useUnrolledGeneratedRow ? RowGenerator.getFactory(schema).rowClass() : null;
 
     return builder
-        .defineMethod("getSchema", Schema.class, Visibility.PRIVATE, Ownership.STATIC)
-        .intercept(FixedValue.reference(schema))
-        .defineMethod("hasNullableFields", boolean.class, Visibility.PRIVATE, Ownership.STATIC)
-        .intercept(FixedValue.reference(hasNullableFields))
-        .method(ElementMatchers.named("encode"))
+        .method(ElementMatchers.named("encode").and(ElementMatchers.takesArguments(2)))
         .intercept(
             new EncodeInstruction(
                 schema,
+                componentCoders,
                 encodingPosToRowIndex,
                 hasNullableFields,
                 staticEncoding,
                 generatedRowClass))
-        .method(ElementMatchers.named("decode"))
+        .method(ElementMatchers.named("decode").and(ElementMatchers.takesArguments(1)))
         .intercept(
             new DecodeInstruction(
                 schema,
+                componentCoders,
                 encodingPosToRowIndex,
                 hasNullableFields,
                 staticEncoding,
@@ -507,6 +497,42 @@ public abstract class RowCoderGenerator {
     return nullMask;
   }
 
+  @SuppressWarnings("unchecked")
+  public static void writeLogicalLong(LogicalType logicalType, Object v, OutputStream out)
+      throws IOException {
+    VarInt.encode(((Number) logicalType.toBaseType(v)).longValue(), out);
+  }
+
+  @SuppressWarnings("unchecked")
+  public static Object readLogicalLong(LogicalType logicalType, InputStream in)
+      throws IOException {
+    return logicalType.toInputType(VarInt.decodeLong(in));
+  }
+
+  @SuppressWarnings("unchecked")
+  public static void writeLogicalInt(LogicalType logicalType, Object v, OutputStream out)
+      throws IOException {
+    VarInt.encode(((Number) logicalType.toBaseType(v)).intValue(), out);
+  }
+
+  @SuppressWarnings("unchecked")
+  public static Object readLogicalInt(LogicalType logicalType, InputStream in)
+      throws IOException {
+    return logicalType.toInputType(VarInt.decodeInt(in));
+  }
+
+  @SuppressWarnings("unchecked")
+  public static void writeLogicalString(LogicalType logicalType, Object v, OutputStream out)
+      throws IOException {
+    STRING_CODER.encode((String) logicalType.toBaseType(v), out);
+  }
+
+  @SuppressWarnings("unchecked")
+  public static Object readLogicalString(LogicalType logicalType, InputStream in)
+      throws IOException {
+    return logicalType.toInputType(STRING_CODER.decode(in));
+  }
+
   static boolean isIdentityPermutation(int[] encodingPosToRowIndex) {
     for (int i = 0; i < encodingPosToRowIndex.length; i++) {
       if (encodingPosToRowIndex[i] != i) {
@@ -528,6 +554,7 @@ public abstract class RowCoderGenerator {
 
   private static class EncodeInstruction implements Implementation {
     private final Schema schema;
+    private final Coder[] componentCoders;
     private final int[] encodingPosToRowIndex;
     private final boolean hasNullableFields;
     private final boolean staticEncoding;
@@ -535,11 +562,13 @@ public abstract class RowCoderGenerator {
 
     EncodeInstruction(
         Schema schema,
+        Coder[] componentCoders,
         int[] encodingPosToRowIndex,
         boolean hasNullableFields,
         boolean staticEncoding,
         @Nullable Class<? extends Row> generatedRowClass) {
       this.schema = schema;
+      this.componentCoders = componentCoders;
       this.encodingPosToRowIndex = encodingPosToRowIndex;
       this.hasNullableFields = hasNullableFields;
       this.staticEncoding = staticEncoding;
@@ -552,11 +581,8 @@ public abstract class RowCoderGenerator {
           staticEncoding
               ? "encodeStatic"
               : (hasNullableFields ? "encodeNullable" : "encodeNonNullable");
-      String coderOwner = implementationTarget.getInstrumentedType().getInternalName();
 
       return (mv, implementationContext, instrumentedMethod) -> {
-        // Note: Coder.encode has two bridges/methods in bytecode:
-        // encode(Object, OutputStream) and/or encode(Row, OutputStream).
         if (generatedRowClass != null) {
           String rowInternal = Type.getInternalName(generatedRowClass);
           Label fallbackLabel = new Label();
@@ -564,17 +590,15 @@ public abstract class RowCoderGenerator {
           mv.visitTypeInsn(Opcodes.INSTANCEOF, rowInternal);
           mv.visitJumpInsn(Opcodes.IFEQ, fallbackLabel);
 
-          emitUnrolledEncode(mv, coderOwner, rowInternal);
+          emitUnrolledEncode(mv, rowInternal);
           mv.visitInsn(Opcodes.RETURN);
 
           mv.visitLabel(fallbackLabel);
         }
 
         // Fallback to static delegate for RowWithGetters or >64 fields
-        mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
-        mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, POSITIONS_FIELD_NAME, INT_ARRAY_DESC);
+        emitLdcConstant(mv, "CODERS", Coder[].class, componentCoders);
+        emitLdcConstant(mv, "POSITIONS", int[].class, encodingPosToRowIndex);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitTypeInsn(Opcodes.CHECKCAST, INTERNAL_ROW_NAME);
         mv.visitVarInsn(Opcodes.ALOAD, 2);
@@ -589,7 +613,7 @@ public abstract class RowCoderGenerator {
       };
     }
 
-    private void emitUnrolledEncode(MethodVisitor mv, String coderOwner, String rowInternal) {
+    private void emitUnrolledEncode(MethodVisitor mv, String rowInternal) {
       int fieldCount = schema.getFieldCount();
       // Local 3: typedRow
       mv.visitVarInsn(Opcodes.ALOAD, 1);
@@ -674,7 +698,8 @@ public abstract class RowCoderGenerator {
           mv.visitJumpInsn(Opcodes.IFNE, skipField);
         }
 
-        emitEncodeSingleField(mv, coderOwner, rowInternal, encPos, fieldName, fieldDesc, typeName);
+        emitEncodeSingleField(
+            mv, rowInternal, encPos, componentCoders[encPos], fieldName, fieldDesc, ft);
 
         if (ft.getNullable()) {
           mv.visitLabel(skipField);
@@ -684,12 +709,13 @@ public abstract class RowCoderGenerator {
 
     private static void emitEncodeSingleField(
         MethodVisitor mv,
-        String coderOwner,
         String rowInternal,
         int encPos,
+        Coder<?> fieldCoder,
         String fieldName,
         String fieldDesc,
-        TypeName typeName) {
+        FieldType ft) {
+      TypeName typeName = ft.getTypeName();
       switch (typeName) {
         case BYTE:
           mv.visitVarInsn(Opcodes.ALOAD, 3);
@@ -812,18 +838,87 @@ public abstract class RowCoderGenerator {
               "(Lorg/joda/time/ReadableInstant;" + OUTPUT_STREAM_DESC + ")V",
               false);
           break;
+        case ROW:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+            mv.visitVarInsn(Opcodes.ALOAD, 2);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "encode",
+                "(" + ROW_DESC + OUTPUT_STREAM_DESC + ")V",
+                false);
+            break;
+          }
+        case MAP:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+            mv.visitVarInsn(Opcodes.ALOAD, 2);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "encode",
+                "(Ljava/util/Map;" + OUTPUT_STREAM_DESC + ")V",
+                false);
+            break;
+          }
+        case ARRAY:
+        case ITERABLE:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+            mv.visitVarInsn(Opcodes.ALOAD, 2);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "encode",
+                "(Ljava/lang/Iterable;" + OUTPUT_STREAM_DESC + ")V",
+                false);
+            break;
+          }
+        case LOGICAL_TYPE:
+          {
+            LogicalType<?, ?> logicalType = ft.getLogicalType();
+            TypeName baseTypeName = logicalType.getBaseType().getTypeName();
+            if (baseTypeName == TypeName.INT64
+                || baseTypeName == TypeName.INT32
+                || baseTypeName == TypeName.STRING) {
+              String helperName =
+                  baseTypeName == TypeName.INT64
+                      ? "writeLogicalLong"
+                      : (baseTypeName == TypeName.INT32 ? "writeLogicalInt" : "writeLogicalString");
+              emitLdcConstant(mv, "LOGICAL_" + encPos, LogicalType.class, logicalType);
+              mv.visitVarInsn(Opcodes.ALOAD, 3);
+              mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+              mv.visitVarInsn(Opcodes.ALOAD, 2);
+              mv.visitMethodInsn(
+                  Opcodes.INVOKESTATIC,
+                  INTERNAL_GENERATOR_NAME,
+                  helperName,
+                  "(" + LOGICAL_TYPE_DESC + OBJECT_DESC + OUTPUT_STREAM_DESC + ")V",
+                  false);
+              break;
+            }
+          }
+          // Fall through for other logical types
         default:
-          // ROW, ARRAY, ITERABLE, MAP, LOGICAL_TYPE -> coders[encPos].encode(typedRow.f_rowIdx, out)
-          mv.visitVarInsn(Opcodes.ALOAD, 0);
-          mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
-          pushInt(mv, encPos);
-          mv.visitInsn(Opcodes.AALOAD);
+          // Complex LOGICAL_TYPE -> condy LDC coder.encode(typedRow.f_rowIdx, out)
+          Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+          emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
           mv.visitVarInsn(Opcodes.ALOAD, 3);
           mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
           mv.visitVarInsn(Opcodes.ALOAD, 2);
           mv.visitMethodInsn(
               Opcodes.INVOKEVIRTUAL,
-              INTERNAL_CODER_NAME,
+              Type.getInternalName(coderClass),
               "encode",
               "(" + OBJECT_DESC + OUTPUT_STREAM_DESC + ")V",
               false);
@@ -934,6 +1029,7 @@ public abstract class RowCoderGenerator {
 
   private static class DecodeInstruction implements Implementation {
     private final Schema schema;
+    private final Coder[] componentCoders;
     private final int[] encodingPosToRowIndex;
     private final boolean hasNullableFields;
     private final boolean staticEncoding;
@@ -941,11 +1037,13 @@ public abstract class RowCoderGenerator {
 
     DecodeInstruction(
         Schema schema,
+        Coder[] componentCoders,
         int[] encodingPosToRowIndex,
         boolean hasNullableFields,
         boolean staticEncoding,
         @Nullable Class<? extends Row> generatedRowClass) {
       this.schema = schema;
+      this.componentCoders = componentCoders;
       this.encodingPosToRowIndex = encodingPosToRowIndex;
       this.hasNullableFields = hasNullableFields;
       this.staticEncoding = staticEncoding;
@@ -955,22 +1053,18 @@ public abstract class RowCoderGenerator {
     @Override
     public ByteCodeAppender appender(Target implementationTarget) {
       String delegateMethodName = staticEncoding ? "decodeStatic" : "decodeDynamic";
-      String coderOwner = implementationTarget.getInstrumentedType().getInternalName();
 
       return (mv, implementationContext, instrumentedMethod) -> {
         if (generatedRowClass != null) {
           String rowInternal = Type.getInternalName(generatedRowClass);
-          emitUnrolledDecode(mv, coderOwner, rowInternal);
+          emitUnrolledDecode(mv, rowInternal);
           mv.visitInsn(Opcodes.ARETURN);
           return new ByteCodeAppender.Size(8, 8);
         }
 
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC, coderOwner, "getSchema", "()" + SCHEMA_DESC, false);
-        mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
-        mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, POSITIONS_FIELD_NAME, INT_ARRAY_DESC);
+        emitLdcConstant(mv, "SCHEMA", Schema.class, schema);
+        emitLdcConstant(mv, "CODERS", Coder[].class, componentCoders);
+        emitLdcConstant(mv, "POSITIONS", int[].class, encodingPosToRowIndex);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,
@@ -983,13 +1077,13 @@ public abstract class RowCoderGenerator {
       };
     }
 
-    private void emitUnrolledDecode(MethodVisitor mv, String coderOwner, String rowInternal) {
+    private void emitUnrolledDecode(MethodVisitor mv, String rowInternal) {
       int fieldCount = schema.getFieldCount();
 
-      // Local 2: GeneratedRow row = new GeneratedRow(getSchema());
+      // Local 2: GeneratedRow row = new GeneratedRow(SCHEMA);
       mv.visitTypeInsn(Opcodes.NEW, rowInternal);
       mv.visitInsn(Opcodes.DUP);
-      mv.visitMethodInsn(Opcodes.INVOKESTATIC, coderOwner, "getSchema", "()" + SCHEMA_DESC, false);
+      emitLdcConstant(mv, "SCHEMA", Schema.class, schema);
       mv.visitMethodInsn(
           Opcodes.INVOKESPECIAL, rowInternal, "<init>", "(" + SCHEMA_DESC + ")V", false);
       mv.visitVarInsn(Opcodes.ASTORE, 2);
@@ -998,10 +1092,11 @@ public abstract class RowCoderGenerator {
         for (int encPos = 0; encPos < fieldCount; encPos++) {
           int rowIdx = encodingPosToRowIndex[encPos];
           Field field = schema.getField(rowIdx);
-          TypeName typeName = field.getType().getTypeName();
+          FieldType ft = field.getType();
           String fieldName = "f" + rowIdx;
-          String fieldDesc = getFieldDescriptor(typeName);
-          emitDecodeSingleField(mv, coderOwner, rowInternal, encPos, fieldName, fieldDesc, typeName);
+          String fieldDesc = getFieldDescriptor(ft.getTypeName());
+          emitDecodeSingleField(
+              mv, rowInternal, encPos, componentCoders[encPos], fieldName, fieldDesc, ft);
         }
         mv.visitVarInsn(Opcodes.ALOAD, 2);
         return;
@@ -1042,30 +1137,32 @@ public abstract class RowCoderGenerator {
 
         for (int encPos = 0; encPos < fieldCount; encPos++) {
           int rowIdx = encodingPosToRowIndex[encPos];
-          TypeName typeName = schema.getField(rowIdx).getType().getTypeName();
+          FieldType ft = schema.getField(rowIdx).getType();
           emitDecodeSingleField(
-              mv, coderOwner, rowInternal, encPos, "f" + rowIdx, getFieldDescriptor(typeName), typeName);
+              mv,
+              rowInternal,
+              encPos,
+              componentCoders[encPos],
+              "f" + rowIdx,
+              getFieldDescriptor(ft.getTypeName()),
+              ft);
         }
         mv.visitJumpInsn(Opcodes.GOTO, doneLabel);
 
         mv.visitLabel(generalPath);
-        emitGeneralDynamicDecode(mv, coderOwner, rowInternal, fieldCount, identityOrder);
+        emitGeneralDynamicDecode(mv, rowInternal, fieldCount, identityOrder);
 
         mv.visitLabel(doneLabel);
         mv.visitVarInsn(Opcodes.ALOAD, 2);
         return;
       }
 
-      emitGeneralDynamicDecode(mv, coderOwner, rowInternal, fieldCount, identityOrder);
+      emitGeneralDynamicDecode(mv, rowInternal, fieldCount, identityOrder);
       mv.visitVarInsn(Opcodes.ALOAD, 2);
     }
 
     private void emitGeneralDynamicDecode(
-        MethodVisitor mv,
-        String coderOwner,
-        String rowInternal,
-        int fieldCount,
-        boolean identityOrder) {
+        MethodVisitor mv, String rowInternal, int fieldCount, boolean identityOrder) {
       // Local 5..6: long wireNullMask = readNullMask(inStream, nullBytesLen);
       mv.visitVarInsn(Opcodes.ALOAD, 1);
       mv.visitVarInsn(Opcodes.ILOAD, 4);
@@ -1086,9 +1183,9 @@ public abstract class RowCoderGenerator {
       for (int encPos = 0; encPos < fieldCount; encPos++) {
         int rowIdx = encodingPosToRowIndex[encPos];
         Field field = schema.getField(rowIdx);
-        TypeName typeName = field.getType().getTypeName();
+        FieldType ft = field.getType();
         String fieldName = "f" + rowIdx;
-        String fieldDesc = getFieldDescriptor(typeName);
+        String fieldDesc = getFieldDescriptor(ft.getTypeName());
 
         Label isNullLabel = new Label();
         Label endFieldLabel = new Label();
@@ -1106,7 +1203,8 @@ public abstract class RowCoderGenerator {
         mv.visitInsn(Opcodes.LCMP);
         mv.visitJumpInsn(Opcodes.IFNE, isNullLabel);
 
-        emitDecodeSingleField(mv, coderOwner, rowInternal, encPos, fieldName, fieldDesc, typeName);
+        emitDecodeSingleField(
+            mv, rowInternal, encPos, componentCoders[encPos], fieldName, fieldDesc, ft);
         if (!identityOrder) {
           mv.visitJumpInsn(Opcodes.GOTO, endFieldLabel);
         }
@@ -1154,12 +1252,13 @@ public abstract class RowCoderGenerator {
 
     private static void emitDecodeSingleField(
         MethodVisitor mv,
-        String coderOwner,
         String rowInternal,
         int encPos,
+        Coder<?> fieldCoder,
         String fieldName,
         String fieldDesc,
-        TypeName typeName) {
+        FieldType ft) {
+      TypeName typeName = ft.getTypeName();
       mv.visitVarInsn(Opcodes.ALOAD, 2);
       switch (typeName) {
         case BYTE:
@@ -1261,41 +1360,95 @@ public abstract class RowCoderGenerator {
               "(" + INPUT_STREAM_DESC + ")Lorg/joda/time/ReadableInstant;",
               false);
           break;
+        case ROW:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 1);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "decode",
+                "(" + INPUT_STREAM_DESC + ")" + ROW_DESC,
+                false);
+            break;
+          }
+        case MAP:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 1);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "decode",
+                "(" + INPUT_STREAM_DESC + ")Ljava/util/Map;",
+                false);
+            break;
+          }
+        case ITERABLE:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 1);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "decode",
+                "(" + INPUT_STREAM_DESC + ")Ljava/lang/Iterable;",
+                false);
+            break;
+          }
+        case ARRAY:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 1);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "decode",
+                "(" + INPUT_STREAM_DESC + ")Ljava/lang/Iterable;",
+                false);
+            mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Collection");
+            break;
+          }
+        case LOGICAL_TYPE:
+          {
+            LogicalType<?, ?> logicalType = ft.getLogicalType();
+            TypeName baseTypeName = logicalType.getBaseType().getTypeName();
+            if (baseTypeName == TypeName.INT64
+                || baseTypeName == TypeName.INT32
+                || baseTypeName == TypeName.STRING) {
+              String helperName =
+                  baseTypeName == TypeName.INT64
+                      ? "readLogicalLong"
+                      : (baseTypeName == TypeName.INT32 ? "readLogicalInt" : "readLogicalString");
+              emitLdcConstant(mv, "LOGICAL_" + encPos, LogicalType.class, logicalType);
+              mv.visitVarInsn(Opcodes.ALOAD, 1);
+              mv.visitMethodInsn(
+                  Opcodes.INVOKESTATIC,
+                  INTERNAL_GENERATOR_NAME,
+                  helperName,
+                  "(" + LOGICAL_TYPE_DESC + INPUT_STREAM_DESC + ")" + OBJECT_DESC,
+                  false);
+              break;
+            }
+          }
+          // Fall through for other logical types
         default:
-          mv.visitVarInsn(Opcodes.ALOAD, 0);
-          mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
-          pushInt(mv, encPos);
-          mv.visitInsn(Opcodes.AALOAD);
+          Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+          emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
           mv.visitVarInsn(Opcodes.ALOAD, 1);
           mv.visitMethodInsn(
               Opcodes.INVOKEVIRTUAL,
-              INTERNAL_CODER_NAME,
+              Type.getInternalName(coderClass),
               "decode",
               "(" + INPUT_STREAM_DESC + ")" + OBJECT_DESC,
               false);
-          castReferenceField(mv, typeName);
           break;
       }
       mv.visitFieldInsn(Opcodes.PUTFIELD, rowInternal, fieldName, fieldDesc);
-    }
-
-    private static void castReferenceField(MethodVisitor mv, TypeName typeName) {
-      switch (typeName) {
-        case ROW:
-          mv.visitTypeInsn(Opcodes.CHECKCAST, INTERNAL_ROW_NAME);
-          break;
-        case ARRAY:
-          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Collection");
-          break;
-        case ITERABLE:
-          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Iterable");
-          break;
-        case MAP:
-          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Map");
-          break;
-        default:
-          break;
-      }
     }
 
     @Override

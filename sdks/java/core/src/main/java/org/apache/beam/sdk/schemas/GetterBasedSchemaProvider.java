@@ -336,8 +336,7 @@ public abstract class GetterBasedSchemaProvider implements SchemaProvider {
             .withFieldValueGetters(
                 factory,
                 value,
-                Optional.ofNullable(valueType)
-                    .orElse((TypeDescriptor) TypeDescriptor.of(value.getClass())));
+                valueType != null ? valueType : TypeDescriptor.of(value.getClass()));
       }
     }
 
@@ -414,9 +413,11 @@ public abstract class GetterBasedSchemaProvider implements SchemaProvider {
       Map<@Nullable K2, @Nullable V2> convert(Map<@Nullable K1, @Nullable V1> value) {
         Map<@Nullable K2, @Nullable V2> returnMap = Maps.newHashMapWithExpectedSize(value.size());
         for (Map.Entry<@Nullable K1, @Nullable V1> entry : value.entrySet()) {
+          K1 key = entry.getKey();
+          V1 entryVal = entry.getValue();
           returnMap.put(
-              Optional.ofNullable(entry.getKey()).map(keyConverter::get).orElse(null),
-              Optional.ofNullable(entry.getValue()).map(valueConverter::get).orElse(null));
+              key != null ? keyConverter.get(key) : null,
+              entryVal != null ? valueConverter.get(entryVal) : null);
         }
         return returnMap;
       }

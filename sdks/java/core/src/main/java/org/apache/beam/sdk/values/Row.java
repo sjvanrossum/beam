@@ -731,12 +731,22 @@ public abstract class Row implements Serializable {
 
   /** Builder for {@link Row}. */
   public static class Builder {
-    private final List<@Nullable Object> values;
+    private @Nullable List<@Nullable Object> values;
     private final Schema schema;
 
     Builder(Schema schema) {
       this.schema = schema;
-      this.values = new ArrayList<>(schema.getFieldCount());
+    }
+
+    private List<@Nullable Object> getOrCreateValues() {
+      if (this.values == null) {
+        this.values = new ArrayList<>(schema.getFieldCount());
+      }
+      return this.values;
+    }
+
+    private boolean isEmpty() {
+      return this.values == null || this.values.isEmpty();
     }
 
     /** Return the schema for the row being built. */
@@ -749,20 +759,20 @@ public abstract class Row implements Serializable {
      * syntax.
      */
     public FieldValueBuilder withFieldValue(String fieldName, Object value) {
-      checkState(values.isEmpty());
+      checkState(isEmpty());
       return new FieldValueBuilder(schema, null).withFieldValue(fieldName, value);
     }
 
     /** Set a field value using the field id. */
     public FieldValueBuilder withFieldValue(Integer fieldId, Object value) {
-      checkState(values.isEmpty());
+      checkState(isEmpty());
       return new FieldValueBuilder(schema, null).withFieldValue(fieldId, value);
     }
 
     /** Set a field value using a FieldAccessDescriptor. */
     public FieldValueBuilder withFieldValue(
         FieldAccessDescriptor fieldAccessDescriptor, Object value) {
-      checkState(values.isEmpty());
+      checkState(isEmpty());
       return new FieldValueBuilder(schema, null).withFieldValue(fieldAccessDescriptor, value);
     }
 
@@ -771,7 +781,7 @@ public abstract class Row implements Serializable {
      * syntax.
      */
     public FieldValueBuilder withFieldValues(Map<String, Object> values) {
-      checkState(this.values.isEmpty());
+      checkState(isEmpty());
       return new FieldValueBuilder(schema, null).withFieldValues(values);
     }
 
@@ -782,22 +792,22 @@ public abstract class Row implements Serializable {
     // withFieldValues.
 
     public Builder addValue(@Nullable Object value) {
-      this.values.add(value);
+      getOrCreateValues().add(value);
       return this;
     }
 
     public Builder addValues(List<@Nullable Object> values) {
-      this.values.addAll(values);
+      getOrCreateValues().addAll(values);
       return this;
     }
 
     public Builder addValues(@Nullable Object... values) {
-      Collections.addAll(this.values, values);
+      Collections.addAll(getOrCreateValues(), values);
       return this;
     }
 
     public <T> Builder addArray(Collection<T> values) {
-      this.values.add(values);
+      getOrCreateValues().add(values);
       return this;
     }
 
@@ -807,7 +817,7 @@ public abstract class Row implements Serializable {
     }
 
     public <T> Builder addIterable(Iterable<T> values) {
-      this.values.add(values);
+      getOrCreateValues().add(values);
       return this;
     }
 
@@ -819,7 +829,7 @@ public abstract class Row implements Serializable {
     // used internal to Beam.
     @Internal
     public Row attachValues(List<@Nullable Object> attachedValues) {
-      checkState(this.values.isEmpty());
+      checkState(isEmpty());
       return new RowWithStorage(schema, attachedValues);
     }
 
@@ -828,7 +838,7 @@ public abstract class Row implements Serializable {
     }
 
     public int nextFieldId() {
-      return values.size();
+      return this.values == null ? 0 : this.values.size();
     }
 
     @Internal
@@ -843,21 +853,20 @@ public abstract class Row implements Serializable {
     public Row build() {
       checkNotNull(schema);
 
-      if (!values.isEmpty() && values.size() != schema.getFieldCount()) {
-        throw new IllegalArgumentException(
-            "Row expected "
-                + schema.getFieldCount()
-                + String.format(
-                    " fields (%s).",
-                    schema.getFields().stream()
-                        .map(Object::toString)
-                        .collect(Collectors.joining(", ")))
-                + " initialized with "
-                + values.size()
-                + " fields.");
-      }
-
-      if (!values.isEmpty()) {
+      if (values != null && !values.isEmpty()) {
+        if (values.size() != schema.getFieldCount()) {
+          throw new IllegalArgumentException(
+              "Row expected "
+                  + schema.getFieldCount()
+                  + String.format(
+                      " fields (%s).",
+                      schema.getFields().stream()
+                          .map(Object::toString)
+                          .collect(Collectors.joining(", ")))
+                  + " initialized with "
+                  + values.size()
+                  + " fields.");
+        }
         return RowUtils.captureRow(schema, this.values);
       }
       return new RowWithStorage(schema, Collections.emptyList());

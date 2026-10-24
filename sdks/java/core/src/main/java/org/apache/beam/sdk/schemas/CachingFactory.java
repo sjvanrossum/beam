@@ -37,6 +37,18 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * inner factory, so the schema comparison only need happen on the first lookup.
  */
 public class CachingFactory<CreatedT extends @NonNull Object> implements Factory<CreatedT> {
+  private static final class CachedEntry<T> {
+    final TypeDescriptor<?> typeDescriptor;
+    final T value;
+
+    CachedEntry(TypeDescriptor<?> typeDescriptor, T value) {
+      this.typeDescriptor = typeDescriptor;
+      this.value = value;
+    }
+  }
+
+  private transient volatile @Nullable CachedEntry<CreatedT> fastCache = null;
+
   private transient volatile @MonotonicNonNull ConcurrentHashMap<TypeDescriptor<?>, CreatedT>
       cache = null;
 
@@ -60,14 +72,21 @@ public class CachingFactory<CreatedT extends @NonNull Object> implements Factory
   }
 
   @Override
+  @SuppressWarnings("ReferenceEquality")
   public CreatedT create(TypeDescriptor<?> typeDescriptor, Schema schema) {
+    CachedEntry<CreatedT> fast = fastCache;
+    if (fast != null && fast.typeDescriptor == typeDescriptor) {
+      return fast.value;
+    }
     ConcurrentHashMap<TypeDescriptor<?>, CreatedT> cache = getCache();
     CreatedT cached = cache.get(typeDescriptor);
     if (cached != null) {
+      fastCache = new CachedEntry<>(typeDescriptor, cached);
       return cached;
     }
     cached = innerFactory.create(typeDescriptor, schema);
     cache.put(typeDescriptor, cached);
+    fastCache = new CachedEntry<>(typeDescriptor, cached);
     return cached;
   }
 

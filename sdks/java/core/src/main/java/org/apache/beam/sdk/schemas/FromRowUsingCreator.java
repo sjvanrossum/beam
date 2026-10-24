@@ -55,6 +55,9 @@ class FromRowUsingCreator<T> implements SerializableFunction<Row, T>, Function<R
   @SuppressFBWarnings("SE_TRANSIENT_FIELD_NOT_RESTORED")
   private transient volatile @MonotonicNonNull Function[] fieldConverters;
 
+  @SuppressFBWarnings("SE_TRANSIENT_FIELD_NOT_RESTORED")
+  private transient volatile @MonotonicNonNull SchemaUserTypeCreator creator;
+
   public FromRowUsingCreator(
       TypeDescriptor<T> typeDescriptor, GetterBasedSchemaProvider schemaProvider) {
     this(
@@ -88,18 +91,24 @@ class FromRowUsingCreator<T> implements SerializableFunction<Row, T>, Function<R
         return (T) rowWithGetters.getGetterTarget();
       }
     }
-    if (fieldConverters == null) {
+    Function[] converters = fieldConverters;
+    SchemaUserTypeCreator typeCreator = creator;
+    if (converters == null || typeCreator == null) {
       initFieldConverters(row.getSchema());
+      converters = fieldConverters;
+      typeCreator = creator;
     }
-    checkState(fieldConverters.length == row.getFieldCount(), "Unexpected field count");
+    int fieldCount = row.getFieldCount();
+    checkState(converters.length == fieldCount, "Unexpected field count");
 
-    Object[] params = new Object[row.getFieldCount()];
-    for (int i = 0; i < row.getFieldCount(); ++i) {
-      params[i] = fieldConverters[i].apply(row.getValue(i));
+    Object[] params = new Object[fieldCount];
+    for (int i = 0; i < fieldCount; ++i) {
+      Object value = row.getValue(i);
+      Function converter = converters[i];
+      params[i] =
+          (value != null && converter != FieldConverter.IDENTITY) ? converter.apply(value) : value;
     }
-    SchemaUserTypeCreator creator =
-        schemaTypeCreatorFactory.create(typeDescriptor, row.getSchema());
-    return (T) creator.create(params);
+    return (T) typeCreator.create(params);
   }
 
   private synchronized void initFieldConverters(Schema schema) {
@@ -107,6 +116,9 @@ class FromRowUsingCreator<T> implements SerializableFunction<Row, T>, Function<R
       CachingFactory<List<FieldValueTypeInformation>> typeFactory =
           new CachingFactory<>(schemaProvider::fieldValueTypeInformations);
       fieldConverters = fieldConverters(typeDescriptor, schema, typeFactory);
+    }
+    if (creator == null) {
+      creator = schemaTypeCreatorFactory.create(typeDescriptor, schema);
     }
   }
 

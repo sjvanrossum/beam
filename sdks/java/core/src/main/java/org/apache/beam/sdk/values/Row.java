@@ -260,12 +260,31 @@ public abstract class Row implements Serializable {
     return getRow(getSchema().indexOf(fieldName));
   }
 
+  /** Returns whether the field at {@code fieldName} is null. */
+  public boolean isNull(String fieldName) {
+    return isNull(getSchema().indexOf(fieldName));
+  }
+
+  /** Returns whether the field at {@code idx} is null. */
+  public boolean isNull(int idx) {
+    return getValue(idx) == null;
+  }
+
   /**
    * Get a {@link TypeName#BYTE} value by field index, {@link ClassCastException} is thrown if
    * schema doesn't match.
    */
   public @Nullable Byte getByte(int idx) {
     return getValue(idx);
+  }
+
+  /**
+   * Get an unboxed {@link TypeName#BYTE} value by field index. Throws {@link NullPointerException}
+   * if the field is null, or {@link ClassCastException} if the schema type doesn't match.
+   */
+  @Internal
+  public byte getPrimitiveByte(int idx) {
+    return getByte(idx);
   }
 
   /**
@@ -285,11 +304,29 @@ public abstract class Row implements Serializable {
   }
 
   /**
+   * Get an unboxed {@link TypeName#INT16} value by field index. Throws {@link NullPointerException}
+   * if the field is null, or {@link ClassCastException} if the schema type doesn't match.
+   */
+  @Internal
+  public short getPrimitiveInt16(int idx) {
+    return getInt16(idx);
+  }
+
+  /**
    * Get a {@link TypeName#INT32} value by field index, {@link ClassCastException} is thrown if
    * schema doesn't match.
    */
   public @Nullable Integer getInt32(int idx) {
     return getValue(idx);
+  }
+
+  /**
+   * Get an unboxed {@link TypeName#INT32} value by field index. Throws {@link NullPointerException}
+   * if the field is null, or {@link ClassCastException} if the schema type doesn't match.
+   */
+  @Internal
+  public int getPrimitiveInt32(int idx) {
+    return getInt32(idx);
   }
 
   /**
@@ -301,6 +338,15 @@ public abstract class Row implements Serializable {
   }
 
   /**
+   * Get an unboxed {@link TypeName#FLOAT} value by field index. Throws {@link NullPointerException}
+   * if the field is null, or {@link ClassCastException} if the schema type doesn't match.
+   */
+  @Internal
+  public float getPrimitiveFloat(int idx) {
+    return getFloat(idx);
+  }
+
+  /**
    * Get a {@link TypeName#DOUBLE} value by field index, {@link ClassCastException} is thrown if
    * schema doesn't match.
    */
@@ -309,11 +355,30 @@ public abstract class Row implements Serializable {
   }
 
   /**
+   * Get an unboxed {@link TypeName#DOUBLE} value by field index. Throws {@link
+   * NullPointerException} if the field is null, or {@link ClassCastException} if the schema type
+   * doesn't match.
+   */
+  @Internal
+  public double getPrimitiveDouble(int idx) {
+    return getDouble(idx);
+  }
+
+  /**
    * Get a {@link TypeName#INT64} value by field index, {@link ClassCastException} is thrown if
    * schema doesn't match.
    */
   public @Nullable Long getInt64(int idx) {
     return getValue(idx);
+  }
+
+  /**
+   * Get an unboxed {@link TypeName#INT64} value by field index. Throws {@link NullPointerException}
+   * if the field is null, or {@link ClassCastException} if the schema type doesn't match.
+   */
+  @Internal
+  public long getPrimitiveInt64(int idx) {
+    return getInt64(idx);
   }
 
   /**
@@ -347,6 +412,16 @@ public abstract class Row implements Serializable {
    */
   public @Nullable Boolean getBoolean(int idx) {
     return getValue(idx);
+  }
+
+  /**
+   * Get an unboxed {@link TypeName#BOOLEAN} value by field index. Throws {@link
+   * NullPointerException} if the field is null, or {@link ClassCastException} if the schema type
+   * doesn't match.
+   */
+  @Internal
+  public boolean getPrimitiveBoolean(int idx) {
+    return getBoolean(idx);
   }
 
   /**

@@ -346,6 +346,8 @@ public final class RowGenerator {
             .intercept(new GetFieldCountImplementation(fieldCount))
             .method(ElementMatchers.named("getValues"))
             .intercept(new GetValuesImplementation())
+            .method(ElementMatchers.named("isNull").and(ElementMatchers.takesArguments(int.class)))
+            .intercept(new IsNullImplementation(fieldCount))
             .method(ElementMatchers.named("getValue").and(ElementMatchers.takesArguments(int.class)))
             .intercept(new GetValueImplementation(fieldCount, typeNames, descriptors))
             .method(ElementMatchers.named("equals").and(ElementMatchers.takesArguments(Object.class)))
@@ -354,6 +356,34 @@ public final class RowGenerator {
             .intercept(new HashCodeImplementation(fieldCount, typeNames, descriptors))
             .defineMethod("writeReplace", Object.class, Visibility.PRIVATE)
             .intercept(new WriteReplaceImplementation());
+
+    for (TypeName primitiveType : PRIMITIVE_TYPES) {
+      int count = 0;
+      for (int i = 0; i < fieldCount; i++) {
+        if (typeNames[i] == primitiveType) {
+          count++;
+        }
+      }
+      if (count > 0) {
+        int[] matchingIndices = new int[count];
+        int pos = 0;
+        for (int i = 0; i < fieldCount; i++) {
+          if (typeNames[i] == primitiveType) {
+            matchingIndices[pos++] = i;
+          }
+        }
+        rowBuilder =
+            rowBuilder
+                .method(
+                    ElementMatchers.named(primitiveGetterName(primitiveType))
+                        .and(ElementMatchers.takesArguments(int.class)))
+                .intercept(new GetPrimitiveImplementation(primitiveType, matchingIndices))
+                .method(
+                    ElementMatchers.named(boxedGetterName(primitiveType))
+                        .and(ElementMatchers.takesArguments(int.class)))
+                .intercept(new GetBoxedPrimitiveImplementation(primitiveType, matchingIndices));
+      }
+    }
 
     Class<? extends Row> loadedRowClass =
         rowBuilder
@@ -665,6 +695,241 @@ public final class RowGenerator {
             false);
         mv.visitInsn(Opcodes.ARETURN);
         return new ByteCodeAppender.Size(1, 1);
+      };
+    }
+  }
+
+  private static final TypeName[] PRIMITIVE_TYPES = {
+    TypeName.BYTE,
+    TypeName.INT16,
+    TypeName.INT32,
+    TypeName.INT64,
+    TypeName.FLOAT,
+    TypeName.DOUBLE,
+    TypeName.BOOLEAN
+  };
+
+  private static final class IsNullImplementation implements Implementation {
+    private final int fieldCount;
+
+    IsNullImplementation(int fieldCount) {
+      this.fieldCount = fieldCount;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(Target implementationTarget) {
+      String owner = implementationTarget.getInstrumentedType().getInternalName();
+      return (mv, context, method) -> {
+        Label invalidIdx = new Label();
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitJumpInsn(Opcodes.IFLT, invalidIdx);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        pushInt(mv, fieldCount);
+        mv.visitJumpInsn(Opcodes.IF_ICMPGE, invalidIdx);
+
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, owner, "nullMask", "J");
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitInsn(Opcodes.LUSHR);
+        mv.visitInsn(Opcodes.L2I);
+        mv.visitInsn(Opcodes.ICONST_1);
+        mv.visitInsn(Opcodes.IAND);
+        mv.visitInsn(Opcodes.IRETURN);
+
+        mv.visitLabel(invalidIdx);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            INTERNAL_GENERATOR_NAME,
+            "invalidFieldIndexException",
+            "(I)Ljava/lang/IllegalArgumentException;",
+            false);
+        mv.visitInsn(Opcodes.ATHROW);
+        return new ByteCodeAppender.Size(3, 2);
+      };
+    }
+  }
+
+  private static void emitIndexDispatch(
+      MethodVisitor mv, int[] matchingIndices, Label[] caseLabels, Label fallbackLabel) {
+    int count = matchingIndices.length;
+    if (count == 1) {
+      mv.visitVarInsn(Opcodes.ILOAD, 1);
+      int idx0 = matchingIndices[0];
+      if (idx0 == 0) {
+        mv.visitJumpInsn(Opcodes.IFNE, fallbackLabel);
+      } else {
+        pushInt(mv, idx0);
+        mv.visitJumpInsn(Opcodes.IF_ICMPNE, fallbackLabel);
+      }
+    } else if (count <= 3) {
+      for (int k = 0; k < count; k++) {
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        int idx = matchingIndices[k];
+        if (idx == 0) {
+          mv.visitJumpInsn(Opcodes.IFEQ, caseLabels[k]);
+        } else {
+          pushInt(mv, idx);
+          mv.visitJumpInsn(Opcodes.IF_ICMPEQ, caseLabels[k]);
+        }
+      }
+      mv.visitJumpInsn(Opcodes.GOTO, fallbackLabel);
+    } else {
+      int minIdx = matchingIndices[0];
+      int maxIdx = matchingIndices[count - 1];
+      mv.visitVarInsn(Opcodes.ILOAD, 1);
+      if (maxIdx - minIdx + 1 <= 2 * count) {
+        Label[] table = new Label[maxIdx - minIdx + 1];
+        java.util.Arrays.fill(table, fallbackLabel);
+        for (int k = 0; k < count; k++) {
+          table[matchingIndices[k] - minIdx] = caseLabels[k];
+        }
+        mv.visitTableSwitchInsn(minIdx, maxIdx, fallbackLabel, table);
+      } else {
+        mv.visitLookupSwitchInsn(fallbackLabel, matchingIndices, caseLabels);
+      }
+    }
+  }
+
+  public static RuntimeException invalidPrimitiveAccessException(
+      Row row, int fieldIdx, Class<?> boxedClass) {
+    Object val = row.getValue(fieldIdx);
+    if (val == null) {
+      return new NullPointerException("Null value at field index " + fieldIdx);
+    }
+    return new ClassCastException(
+        "Cannot cast "
+            + val.getClass().getName()
+            + " to "
+            + boxedClass.getName()
+            + " at field index "
+            + fieldIdx);
+  }
+
+  private static final class GetPrimitiveImplementation implements Implementation {
+    private final TypeName targetType;
+    private final int[] matchingIndices;
+
+    GetPrimitiveImplementation(TypeName targetType, int[] matchingIndices) {
+      this.targetType = targetType;
+      this.matchingIndices = matchingIndices;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(Target implementationTarget) {
+      String owner = implementationTarget.getInstrumentedType().getInternalName();
+      String desc = Type.getDescriptor(fieldJvmType(targetType));
+      String boxedDesc = boxedDescriptor(targetType);
+      int returnOpcode = primitiveReturnOpcode(targetType);
+      return (mv, context, method) -> {
+        int count = matchingIndices.length;
+        Label fallbackLabel = new Label();
+        Label[] caseLabels = new Label[count];
+        for (int k = 0; k < count; k++) {
+          caseLabels[k] = new Label();
+        }
+
+        emitIndexDispatch(mv, matchingIndices, caseLabels, fallbackLabel);
+
+        for (int k = 0; k < count; k++) {
+          int fieldIdx = matchingIndices[k];
+          mv.visitLabel(caseLabels[k]);
+          mv.visitVarInsn(Opcodes.ALOAD, 0);
+          mv.visitFieldInsn(Opcodes.GETFIELD, owner, "nullMask", "J");
+          mv.visitLdcInsn(1L << fieldIdx);
+          mv.visitInsn(Opcodes.LAND);
+          mv.visitInsn(Opcodes.LCONST_0);
+          mv.visitInsn(Opcodes.LCMP);
+          mv.visitJumpInsn(Opcodes.IFNE, fallbackLabel);
+          mv.visitVarInsn(Opcodes.ALOAD, 0);
+          mv.visitFieldInsn(Opcodes.GETFIELD, owner, fieldName(fieldIdx), desc);
+          mv.visitInsn(returnOpcode);
+        }
+
+        mv.visitLabel(fallbackLabel);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitLdcInsn(Type.getType(boxedDesc));
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            INTERNAL_GENERATOR_NAME,
+            "invalidPrimitiveAccessException",
+            "(L" + INTERNAL_ROW_NAME + ";ILjava/lang/Class;)Ljava/lang/RuntimeException;",
+            false);
+        mv.visitInsn(Opcodes.ATHROW);
+        return new ByteCodeAppender.Size(4, 2);
+      };
+    }
+  }
+
+  private static final class GetBoxedPrimitiveImplementation implements Implementation {
+    private final TypeName targetType;
+    private final int[] matchingIndices;
+
+    GetBoxedPrimitiveImplementation(TypeName targetType, int[] matchingIndices) {
+      this.targetType = targetType;
+      this.matchingIndices = matchingIndices;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(Target implementationTarget) {
+      String owner = implementationTarget.getInstrumentedType().getInternalName();
+      String methodName = boxedGetterName(targetType);
+      String primDesc = Type.getDescriptor(fieldJvmType(targetType));
+      String boxedDesc = boxedDescriptor(targetType);
+      return (mv, context, method) -> {
+        int count = matchingIndices.length;
+        Label returnNullLabel = new Label();
+        Label fallbackLabel = new Label();
+        Label[] caseLabels = new Label[count];
+        for (int k = 0; k < count; k++) {
+          caseLabels[k] = new Label();
+        }
+
+        emitIndexDispatch(mv, matchingIndices, caseLabels, fallbackLabel);
+
+        for (int k = 0; k < count; k++) {
+          int fieldIdx = matchingIndices[k];
+          mv.visitLabel(caseLabels[k]);
+          mv.visitVarInsn(Opcodes.ALOAD, 0);
+          mv.visitFieldInsn(Opcodes.GETFIELD, owner, "nullMask", "J");
+          mv.visitLdcInsn(1L << fieldIdx);
+          mv.visitInsn(Opcodes.LAND);
+          mv.visitInsn(Opcodes.LCONST_0);
+          mv.visitInsn(Opcodes.LCMP);
+          mv.visitJumpInsn(Opcodes.IFNE, returnNullLabel);
+          mv.visitVarInsn(Opcodes.ALOAD, 0);
+          mv.visitFieldInsn(Opcodes.GETFIELD, owner, fieldName(fieldIdx), primDesc);
+          boxPrimitive(mv, targetType);
+          mv.visitInsn(Opcodes.ARETURN);
+        }
+
+        mv.visitLabel(returnNullLabel);
+        mv.visitInsn(Opcodes.ACONST_NULL);
+        mv.visitInsn(Opcodes.ARETURN);
+
+        mv.visitLabel(fallbackLabel);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 1);
+        mv.visitMethodInsn(
+            Opcodes.INVOKESPECIAL, INTERNAL_ROW_NAME, methodName, "(I)" + boxedDesc, false);
+        mv.visitInsn(Opcodes.ARETURN);
+        return new ByteCodeAppender.Size(4, 2);
       };
     }
   }
@@ -1292,6 +1557,87 @@ public final class RowGenerator {
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC, "java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;", false);
         break;
+      default:
+        throw new IllegalArgumentException("Not a primitive type: " + typeName);
+    }
+  }
+
+  static String primitiveGetterName(TypeName typeName) {
+    switch (typeName) {
+      case BYTE:
+        return "getPrimitiveByte";
+      case INT16:
+        return "getPrimitiveInt16";
+      case INT32:
+        return "getPrimitiveInt32";
+      case INT64:
+        return "getPrimitiveInt64";
+      case FLOAT:
+        return "getPrimitiveFloat";
+      case DOUBLE:
+        return "getPrimitiveDouble";
+      case BOOLEAN:
+        return "getPrimitiveBoolean";
+      default:
+        throw new IllegalArgumentException("Not a primitive type: " + typeName);
+    }
+  }
+
+  static String boxedGetterName(TypeName typeName) {
+    switch (typeName) {
+      case BYTE:
+        return "getByte";
+      case INT16:
+        return "getInt16";
+      case INT32:
+        return "getInt32";
+      case INT64:
+        return "getInt64";
+      case FLOAT:
+        return "getFloat";
+      case DOUBLE:
+        return "getDouble";
+      case BOOLEAN:
+        return "getBoolean";
+      default:
+        throw new IllegalArgumentException("Not a primitive type: " + typeName);
+    }
+  }
+
+  static String boxedDescriptor(TypeName typeName) {
+    switch (typeName) {
+      case BYTE:
+        return "Ljava/lang/Byte;";
+      case INT16:
+        return "Ljava/lang/Short;";
+      case INT32:
+        return "Ljava/lang/Integer;";
+      case INT64:
+        return "Ljava/lang/Long;";
+      case FLOAT:
+        return "Ljava/lang/Float;";
+      case DOUBLE:
+        return "Ljava/lang/Double;";
+      case BOOLEAN:
+        return "Ljava/lang/Boolean;";
+      default:
+        throw new IllegalArgumentException("Not a primitive type: " + typeName);
+    }
+  }
+
+  static int primitiveReturnOpcode(TypeName typeName) {
+    switch (typeName) {
+      case BYTE:
+      case INT16:
+      case INT32:
+      case BOOLEAN:
+        return Opcodes.IRETURN;
+      case INT64:
+        return Opcodes.LRETURN;
+      case FLOAT:
+        return Opcodes.FRETURN;
+      case DOUBLE:
+        return Opcodes.DRETURN;
       default:
         throw new IllegalArgumentException("Not a primitive type: " + typeName);
     }

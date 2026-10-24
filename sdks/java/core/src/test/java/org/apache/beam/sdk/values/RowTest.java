@@ -23,6 +23,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import java.math.BigDecimal;
@@ -981,5 +982,135 @@ public class RowTest {
     assertEquals(rowFromBytes, rowFromReadOnly);
     assertTrue(Arrays.equals(expected, rowFromSlice.getBytes(0)));
     assertTrue(Arrays.equals(expected, rowFromReadOnly.getBytes(0)));
+  }
+
+  @Test
+  public void testUnboxedPrimitiveGettersAndIsNull() {
+    Schema schema =
+        Schema.builder()
+            .addNullableField("f_byte", FieldType.BYTE)
+            .addNullableField("f_int16", FieldType.INT16)
+            .addNullableField("f_int32", FieldType.INT32)
+            .addNullableField("f_int64", FieldType.INT64)
+            .addNullableField("f_float", FieldType.FLOAT)
+            .addNullableField("f_double", FieldType.DOUBLE)
+            .addNullableField("f_bool", FieldType.BOOLEAN)
+            .addNullableField("f_str", FieldType.STRING)
+            .build();
+
+    Row nonNullRow =
+        Row.withSchema(schema)
+            .addValues((byte) 7, (short) 17, 27, 37L, 4.5f, 8.25d, true, "beam")
+            .build();
+
+    for (int i = 0; i < schema.getFieldCount(); i++) {
+      assertFalse(nonNullRow.isNull(i));
+      assertFalse(nonNullRow.isNull(schema.nameOf(i)));
+    }
+    assertEquals((byte) 7, nonNullRow.getPrimitiveByte(0));
+    assertEquals((short) 17, nonNullRow.getPrimitiveInt16(1));
+    assertEquals(27, nonNullRow.getPrimitiveInt32(2));
+    assertEquals(37L, nonNullRow.getPrimitiveInt64(3));
+    assertEquals(4.5f, nonNullRow.getPrimitiveFloat(4), 0.0f);
+    assertEquals(8.25d, nonNullRow.getPrimitiveDouble(5), 0.0d);
+    assertTrue(nonNullRow.getPrimitiveBoolean(6));
+
+    assertEquals(Byte.valueOf((byte) 7), nonNullRow.getByte(0));
+    assertEquals(Short.valueOf((short) 17), nonNullRow.getInt16(1));
+    assertEquals(Integer.valueOf(27), nonNullRow.getInt32(2));
+    assertEquals(Long.valueOf(37L), nonNullRow.getInt64(3));
+    assertEquals(Float.valueOf(4.5f), nonNullRow.getFloat(4));
+    assertEquals(Double.valueOf(8.25d), nonNullRow.getDouble(5));
+    assertEquals(Boolean.TRUE, nonNullRow.getBoolean(6));
+
+    // Wrong field type throws ClassCastException
+    assertThrows(ClassCastException.class, () -> nonNullRow.getPrimitiveInt32(7));
+    assertThrows(ClassCastException.class, () -> nonNullRow.getInt32(7));
+    assertThrows(ClassCastException.class, () -> nonNullRow.getPrimitiveInt64(2));
+    assertThrows(ClassCastException.class, () -> nonNullRow.getInt64(2));
+
+    // Out-of-bounds index throws IllegalArgumentException
+    assertThrows(IllegalArgumentException.class, () -> nonNullRow.isNull(-1));
+    assertThrows(IllegalArgumentException.class, () -> nonNullRow.isNull(8));
+    assertThrows(IllegalArgumentException.class, () -> nonNullRow.getPrimitiveInt32(-1));
+    assertThrows(IllegalArgumentException.class, () -> nonNullRow.getPrimitiveInt32(8));
+    assertThrows(IllegalArgumentException.class, () -> nonNullRow.getInt32(-1));
+    assertThrows(IllegalArgumentException.class, () -> nonNullRow.getInt32(8));
+
+    // Null row checks
+    Row nullRow = Row.nullRow(schema);
+    for (int i = 0; i < schema.getFieldCount(); i++) {
+      assertTrue(nullRow.isNull(i));
+      assertTrue(nullRow.isNull(schema.nameOf(i)));
+    }
+    assertNull(nullRow.getByte(0));
+    assertNull(nullRow.getInt16(1));
+    assertNull(nullRow.getInt32(2));
+    assertNull(nullRow.getInt64(3));
+    assertNull(nullRow.getFloat(4));
+    assertNull(nullRow.getDouble(5));
+    assertNull(nullRow.getBoolean(6));
+
+    assertThrows(NullPointerException.class, () -> nullRow.getPrimitiveByte(0));
+    assertThrows(NullPointerException.class, () -> nullRow.getPrimitiveInt16(1));
+    assertThrows(NullPointerException.class, () -> nullRow.getPrimitiveInt32(2));
+    assertThrows(NullPointerException.class, () -> nullRow.getPrimitiveInt64(3));
+    assertThrows(NullPointerException.class, () -> nullRow.getPrimitiveFloat(4));
+    assertThrows(NullPointerException.class, () -> nullRow.getPrimitiveDouble(5));
+    assertThrows(NullPointerException.class, () -> nullRow.getPrimitiveBoolean(6));
+  }
+
+  @Test
+  public void testPrimitiveGettersMultiFieldDispatch() {
+    // 2 INT64 fields (count <= 3 branch), 4 contiguous INT32 fields (tableswitch branch),
+    // and 4 sparse DOUBLE fields separated by STRING fields (lookupswitch branch).
+    Schema schema =
+        Schema.builder()
+            .addInt64Field("l0") // 0
+            .addInt32Field("i0") // 1
+            .addInt32Field("i1") // 2
+            .addInt32Field("i2") // 3
+            .addInt32Field("i3") // 4
+            .addDoubleField("d0") // 5
+            .addStringField("s0") // 6
+            .addStringField("s1") // 7
+            .addDoubleField("d1") // 8
+            .addStringField("s2") // 9
+            .addStringField("s3") // 10
+            .addDoubleField("d2") // 11
+            .addStringField("s4") // 12
+            .addStringField("s5") // 13
+            .addDoubleField("d3") // 14
+            .addInt64Field("l1") // 15
+            .build();
+
+    Row row =
+        Row.withSchema(schema)
+            .addValues(
+                100L, 10, 20, 30, 40, 1.5d, "a", "b", 2.5d, "c", "d", 3.5d, "e", "f", 4.5d, 200L)
+            .build();
+
+    assertEquals(100L, row.getPrimitiveInt64(0));
+    assertEquals(200L, row.getPrimitiveInt64(15));
+    assertEquals(Long.valueOf(100L), row.getInt64(0));
+    assertEquals(Long.valueOf(200L), row.getInt64(15));
+
+    assertEquals(10, row.getPrimitiveInt32(1));
+    assertEquals(20, row.getPrimitiveInt32(2));
+    assertEquals(30, row.getPrimitiveInt32(3));
+    assertEquals(40, row.getPrimitiveInt32(4));
+    assertEquals(Integer.valueOf(10), row.getInt32(1));
+    assertEquals(Integer.valueOf(40), row.getInt32(4));
+
+    assertEquals(1.5d, row.getPrimitiveDouble(5), 0.0d);
+    assertEquals(2.5d, row.getPrimitiveDouble(8), 0.0d);
+    assertEquals(3.5d, row.getPrimitiveDouble(11), 0.0d);
+    assertEquals(4.5d, row.getPrimitiveDouble(14), 0.0d);
+    assertEquals(Double.valueOf(1.5d), row.getDouble(5));
+    assertEquals(Double.valueOf(4.5d), row.getDouble(14));
+
+    // Accessing a STRING index between sparse DOUBLE indices throws ClassCastException
+    assertThrows(ClassCastException.class, () -> row.getPrimitiveDouble(6));
+    assertThrows(ClassCastException.class, () -> row.getDouble(6));
   }
 }

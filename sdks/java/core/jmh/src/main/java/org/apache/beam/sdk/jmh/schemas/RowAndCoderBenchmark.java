@@ -147,6 +147,13 @@ public class RowAndCoderBenchmark {
     byte[] encodedPojo;
 
     ByteStringOutputStream outStream;
+    int idx0 = 0;
+    int idx1 = 1;
+    int idx2 = 2;
+    int idx3 = 3;
+    int idx4 = 4;
+    int idx5 = 5;
+    int idx6 = 6;
 
     @Setup
     public void setup() throws IOException, NoSuchSchemaException {
@@ -302,6 +309,43 @@ public class RowAndCoderBenchmark {
         + r.getMap(6).size()
         + nested1.getString(0).length()
         + nested2.getString(0).length();
+  }
+
+  @Benchmark
+  public double readFlatRowViaGetValue(BenchmarkState state) {
+    Row r = state.flatRow;
+    byte b = r.getValue(state.idx0);
+    short s = r.getValue(state.idx1);
+    int i = r.getValue(state.idx2);
+    long l = r.getValue(state.idx3);
+    float f = r.getValue(state.idx4);
+    double d = r.getValue(state.idx5);
+    boolean bool = r.getValue(state.idx6);
+    return b + s + i + l + f + d + (bool ? 1 : 0);
+  }
+
+  @Benchmark
+  public double readFlatRowBoxedGetters(BenchmarkState state) {
+    Row r = state.flatRow;
+    return r.getByte(state.idx0)
+        + r.getInt16(state.idx1)
+        + r.getInt32(state.idx2)
+        + r.getInt64(state.idx3)
+        + r.getFloat(state.idx4)
+        + r.getDouble(state.idx5)
+        + (r.getBoolean(state.idx6) ? 1 : 0);
+  }
+
+  @Benchmark
+  public double readFlatRowPrimitiveGetters(BenchmarkState state) {
+    Row r = state.flatRow;
+    return r.getPrimitiveByte(state.idx0)
+        + r.getPrimitiveInt16(state.idx1)
+        + r.getPrimitiveInt32(state.idx2)
+        + r.getPrimitiveInt64(state.idx3)
+        + r.getPrimitiveFloat(state.idx4)
+        + r.getPrimitiveDouble(state.idx5)
+        + (r.getPrimitiveBoolean(state.idx6) ? 1 : 0);
   }
 
   @Benchmark

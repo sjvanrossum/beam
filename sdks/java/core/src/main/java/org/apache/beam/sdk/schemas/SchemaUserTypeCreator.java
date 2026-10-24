@@ -19,9 +19,22 @@ package org.apache.beam.sdk.schemas;
 
 import java.io.Serializable;
 import org.apache.beam.sdk.annotations.Internal;
+import org.apache.beam.sdk.values.Row;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Function;
 
 /** A creator interface for user types that have schemas. */
 @Internal
+@SuppressWarnings({"rawtypes", "unchecked"})
 public interface SchemaUserTypeCreator extends Serializable {
   Object create(Object... params);
+
+  default Object fromRow(Row row, Function[] fieldConverters) {
+    Object[] params = new Object[row.getFieldCount()];
+    for (int i = 0; i < params.length; ++i) {
+      Object value = row.getValue(i);
+      Function converter = fieldConverters[i];
+      params[i] = (value != null && converter != null) ? converter.apply(value) : value;
+    }
+    return create(params);
+  }
 }

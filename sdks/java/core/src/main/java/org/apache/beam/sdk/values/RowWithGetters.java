@@ -87,6 +87,46 @@ public class RowWithGetters<T extends @NonNull Object> extends Row {
     return (W) fieldValue;
   }
 
+  @Override
+  public boolean isNull(int fieldIdx) {
+    return getters.get(fieldIdx).isNull(getterTarget);
+  }
+
+  @Override
+  public byte getPrimitiveByte(int idx) {
+    return getters.get(idx).getByte(getterTarget);
+  }
+
+  @Override
+  public short getPrimitiveInt16(int idx) {
+    return getters.get(idx).getInt16(getterTarget);
+  }
+
+  @Override
+  public int getPrimitiveInt32(int idx) {
+    return getters.get(idx).getInt32(getterTarget);
+  }
+
+  @Override
+  public long getPrimitiveInt64(int idx) {
+    return getters.get(idx).getInt64(getterTarget);
+  }
+
+  @Override
+  public float getPrimitiveFloat(int idx) {
+    return getters.get(idx).getFloat(getterTarget);
+  }
+
+  @Override
+  public double getPrimitiveDouble(int idx) {
+    return getters.get(idx).getDouble(getterTarget);
+  }
+
+  @Override
+  public boolean getPrimitiveBoolean(int idx) {
+    return getters.get(idx).getBoolean(getterTarget);
+  }
+
   public TypeDescriptor<?> getGetterTargetType() {
     return getterTargetType;
   }

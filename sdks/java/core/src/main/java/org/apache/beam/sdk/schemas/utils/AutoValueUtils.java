@@ -285,13 +285,16 @@ public class AutoValueUtils {
       Schema schema,
       List<FieldValueTypeInformation> types) {
     try {
+      BuilderCreateInstruction createInstruction =
+          new BuilderCreateInstruction(types, setterMethods, builderClass, buildMethod);
       DynamicType.Builder<SchemaUserTypeCreator> builder =
           BYTE_BUDDY
               .with(new InjectPackageStrategy(builderClass))
               .subclass(SchemaUserTypeCreator.class)
               .method(ElementMatchers.named("create"))
-              .intercept(
-                  new BuilderCreateInstruction(types, setterMethods, builderClass, buildMethod));
+              .intercept(createInstruction)
+              .method(ElementMatchers.named("fromRow"))
+              .intercept(createInstruction.fromRowImplementation());
       return builder
           .visit(new ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
           .make()
@@ -380,6 +383,55 @@ public class AutoValueUtils {
 
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new Size(size.getMaximalSize(), numLocals);
+      };
+    }
+
+    public Implementation fromRowImplementation() {
+      TypeConversionsFactory typeConversionsFactory = new DefaultTypeConversionsFactory();
+      ForLoadedType loadedBuilder = new ForLoadedType(builderClass);
+      return new Implementation() {
+        @Override
+        public InstrumentedType prepare(InstrumentedType instrumentedType) {
+          return instrumentedType;
+        }
+
+        @Override
+        public ByteCodeAppender appender(Target implementationTarget) {
+          return (methodVisitor, implementationContext, instrumentedMethod) -> {
+            int numLocals = 1 + instrumentedMethod.getParameters().size();
+            StackManipulation stackManipulation =
+                new StackManipulation.Compound(
+                    TypeCreation.of(loadedBuilder),
+                    Duplication.SINGLE,
+                    MethodInvocation.invoke(
+                        loadedBuilder
+                            .getDeclaredMethods()
+                            .filter(
+                                ElementMatchers.isConstructor()
+                                    .and(ElementMatchers.takesArguments(0)))
+                            .getOnly()));
+            for (int i = 0; i < setters.size(); ++i) {
+              FieldValueTypeInformation setterType = setters.get(i);
+              Method setterMethod = Preconditions.checkStateNotNull(setterType.getMethod());
+              stackManipulation =
+                  new StackManipulation.Compound(
+                      stackManipulation,
+                      Duplication.SINGLE,
+                      ByteBuddyUtils.readAndConvertRowField(
+                          setterType, i, typeConversionsFactory),
+                      MethodInvocation.invoke(new ForLoadedMethod(setterMethod)),
+                      Removal.SINGLE);
+            }
+            stackManipulation =
+                new StackManipulation.Compound(
+                    stackManipulation,
+                    MethodInvocation.invoke(new ForLoadedMethod(buildMethod)),
+                    MethodReturn.REFERENCE);
+            StackManipulation.Size size =
+                stackManipulation.apply(methodVisitor, implementationContext);
+            return new Size(size.getMaximalSize(), numLocals);
+          };
+        }
       };
     }
   }

@@ -178,14 +178,120 @@ public class ByteBuddyUtils {
     throw new IllegalArgumentException("Not an inferred logical type: " + rawType);
   }
 
-  /** Stack manipulation that pushes the static {@link LogicalType} for the given Java type. */
+  /**Stack manipulation that pushes the static {@link LogicalType} for the given Java type. */
   private static StackManipulation loadLogicalType(Class<?> rawType) {
-    return FieldAccess.forField(
-            BYTE_BUDDY_UTILS_TYPE
-                .getDeclaredFields()
-                .filter(ElementMatchers.named(logicalTypeFieldName(rawType)))
-                .getOnly())
-        .read();
+    LogicalType<?, ?> logicalType =
+        checkNotNull(
+            inferredLogicalTypeFor(rawType), "Not an inferred logical type: %s", rawType);
+    return org.apache.beam.sdk.util.ByteBuddyUtils.loadConstantDynamic(
+        "LOGICAL_" + rawType.getSimpleName(), LogicalType.class, logicalType);
+  }
+
+  /**
+   * Returns the {@link FieldValueGetter} unboxed primitive getter method name for a primitive Java
+   * class, or {@code null} if not a supported Beam primitive type.
+   */
+  public static @Nullable String primitiveGetterMethodName(Class<?> rawType) {
+    if (byte.class.equals(rawType)) {
+      return "getByte";
+    } else if (short.class.equals(rawType)) {
+      return "getInt16";
+    } else if (int.class.equals(rawType)) {
+      return "getInt32";
+    } else if (long.class.equals(rawType)) {
+      return "getInt64";
+    } else if (float.class.equals(rawType)) {
+      return "getFloat";
+    } else if (double.class.equals(rawType)) {
+      return "getDouble";
+    } else if (boolean.class.equals(rawType)) {
+      return "getBoolean";
+    }
+    return null;
+  }
+
+  /**
+   * Returns the {@link org.apache.beam.sdk.values.Row} unboxed primitive getter method name for a
+   * primitive Java class, or {@code null} if not a supported Beam primitive type.
+   */
+  public static @Nullable String rowPrimitiveGetterMethodName(Class<?> rawType) {
+    if (byte.class.equals(rawType)) {
+      return "getPrimitiveByte";
+    } else if (short.class.equals(rawType)) {
+      return "getPrimitiveInt16";
+    } else if (int.class.equals(rawType)) {
+      return "getPrimitiveInt32";
+    } else if (long.class.equals(rawType)) {
+      return "getPrimitiveInt64";
+    } else if (float.class.equals(rawType)) {
+      return "getPrimitiveFloat";
+    } else if (double.class.equals(rawType)) {
+      return "getPrimitiveDouble";
+    } else if (boolean.class.equals(rawType)) {
+      return "getPrimitiveBoolean";
+    }
+    return null;
+  }
+
+  private static final ForLoadedType ROW_TYPE =
+      new ForLoadedType(org.apache.beam.sdk.values.Row.class);
+
+  /**
+   * Reads field {@code fieldIndex} from {@code row} and applies {@code converters[fieldIndex]} if
+   * both the value and converter are non-null.
+   */
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static @Nullable Object readConvertedRowField(
+      org.apache.beam.sdk.values.Row row, int fieldIndex, Function[] converters) {
+    Object value = row.getValue(fieldIndex);
+    Function converter = converters[fieldIndex];
+    return (value != null && converter != null) ? converter.apply(value) : value;
+  }
+
+  /**
+   * Returns a {@link StackManipulation} that reads field {@code fieldIndex} from the {@link
+   * org.apache.beam.sdk.values.Row} in local variable 1 (applying the converter from {@code
+   * Function[] fieldConverters} in local variable 2 for non-primitive fields) and converts it to
+   * the target Java field type using {@code typeConversionsFactory}. For Java primitive fields,
+   * calls {@code row.getPrimitive<Type>(fieldIndex)} directly without boxing or unboxing.
+   */
+  public static StackManipulation readAndConvertRowField(
+      FieldValueTypeInformation fieldType,
+      int fieldIndex,
+      TypeConversionsFactory typeConversionsFactory) {
+    Class<?> rawType = fieldType.getRawType();
+    if (rawType.isPrimitive()) {
+      String rowPrimitiveMethod = rowPrimitiveGetterMethodName(rawType);
+      if (rowPrimitiveMethod != null) {
+        return new StackManipulation.Compound(
+            MethodVariableAccess.REFERENCE.loadFrom(1),
+            IntegerConstant.forValue(fieldIndex),
+            MethodInvocation.invoke(
+                ROW_TYPE
+                    .getDeclaredMethods()
+                    .filter(
+                        ElementMatchers.named(rowPrimitiveMethod)
+                            .and(ElementMatchers.takesArguments(int.class)))
+                    .getOnly()));
+      }
+    }
+    TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
+    ForLoadedType convertedType =
+        new ForLoadedType((Class) convertType.convert(fieldType.getType()));
+    StackManipulation readParameter =
+        new StackManipulation.Compound(
+            MethodVariableAccess.REFERENCE.loadFrom(1),
+            IntegerConstant.forValue(fieldIndex),
+            MethodVariableAccess.REFERENCE.loadFrom(2),
+            MethodInvocation.invoke(
+                BYTE_BUDDY_UTILS_TYPE
+                    .getDeclaredMethods()
+                    .filter(ElementMatchers.named("readConvertedRowField"))
+                    .getOnly()),
+            TypeCasting.to(convertedType));
+    return typeConversionsFactory
+        .createSetterConversions(readParameter)
+        .convert(fieldType.getType());
   }
 
   /**
@@ -630,6 +736,41 @@ public class ByteBuddyUtils {
                     .filter(ElementMatchers.named("transformContainer"))
                     .getOnly()));
     return stackManipulation;
+  }
+
+  public static <T> List<T> toList(Iterable<T> iterable) {
+    return (iterable instanceof List) ? (List<T>) iterable : Lists.newArrayList(iterable);
+  }
+
+  static boolean hasIdentityElementConversion(TypeDescriptor<?> typeDescriptor) {
+    if (typeDescriptor.hasUnresolvedParameters()) {
+      return true;
+    }
+    Class<?> rawType = typeDescriptor.getRawType();
+    if (typeDescriptor.isArray()) {
+      return byte[].class.equals(rawType);
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(Map.class))) {
+      return Map.class.equals(rawType)
+          && hasIdentityElementConversion(ReflectUtils.getMapType(typeDescriptor, 0))
+          && hasIdentityElementConversion(ReflectUtils.getMapType(typeDescriptor, 1));
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(ReadableInstant.class))
+        || typeDescriptor.isSubtypeOf(TypeDescriptor.of(ReadablePartial.class))
+        || inferredLogicalTypeFor(rawType) != null
+        || typeDescriptor.isSubtypeOf(TypeDescriptor.of(ByteBuffer.class))
+        || rawType.isPrimitive()
+        || rawType.isEnum()) {
+      return false;
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(CharSequence.class))) {
+      return String.class.equals(rawType);
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(Iterable.class))) {
+      return (List.class.equals(rawType)
+              || Collection.class.equals(rawType)
+              || Iterable.class.equals(rawType))
+          && hasIdentityElementConversion(
+              Preconditions.checkArgumentNotNull(
+                  ReflectUtils.getIterableComponentType(typeDescriptor)));
+    }
+    return true;
   }
 
   public static <K1, V1, K2, V2> TransformingMap<K1, V1, K2, V2> getTransformingMap(
@@ -1135,7 +1276,7 @@ public class ByteBuddyUtils {
       Type rowElementType = getFactory().createTypeConversion(false).convert(componentType);
       final TypeDescriptor<?> arrayElementType = ReflectUtils.boxIfPrimitive(componentType);
       StackManipulation readTransformedValue = readValue;
-      if (!arrayElementType.hasUnresolvedParameters()) {
+      if (!hasIdentityElementConversion(arrayElementType)) {
         ForLoadedType conversionFunction =
             new ForLoadedType(
                 createCollectionTransformFunction(
@@ -1192,7 +1333,7 @@ public class ByteBuddyUtils {
       final TypeDescriptor<?> iterableElementType =
           Preconditions.checkArgumentNotNull(ReflectUtils.getIterableComponentType(type));
       Type rowElementType = getFactory().createTypeConversion(false).convert(iterableElementType);
-      if (!iterableElementType.hasUnresolvedParameters()) {
+      if (!hasIdentityElementConversion(iterableElementType)) {
         ForLoadedType conversionFunction =
             new ForLoadedType(
                 createCollectionTransformFunction(
@@ -1213,7 +1354,7 @@ public class ByteBuddyUtils {
           Preconditions.checkArgumentNotNull(ReflectUtils.getIterableComponentType(type));
       Type rowElementType = getFactory().createTypeConversion(false).convert(collectionElementType);
 
-      if (!collectionElementType.hasUnresolvedParameters()) {
+      if (!hasIdentityElementConversion(collectionElementType)) {
         ForLoadedType conversionFunction =
             new ForLoadedType(
                 createCollectionTransformFunction(
@@ -1234,28 +1375,36 @@ public class ByteBuddyUtils {
           Preconditions.checkArgumentNotNull(ReflectUtils.getIterableComponentType(type));
       Type rowElementType = getFactory().createTypeConversion(false).convert(collectionElementType);
 
-      StackManipulation readTrasformedValue = readValue;
-      if (!collectionElementType.hasUnresolvedParameters()) {
+      if (!hasIdentityElementConversion(collectionElementType)) {
         ForLoadedType conversionFunction =
             new ForLoadedType(
                 createCollectionTransformFunction(
                     TypeDescriptor.of(rowElementType).getRawType(),
                     collectionElementType.getRawType(),
                     (s) -> getFactory().createSetterConversions(s).convert(collectionElementType)));
-        readTrasformedValue = createTransformingContainer(conversionFunction, readValue);
+        StackManipulation readTrasformedValue =
+            createTransformingContainer(conversionFunction, readValue);
+        StackManipulation transformedList =
+            new Compound(
+                readTrasformedValue,
+                MethodInvocation.invoke(
+                    new ForLoadedType(Lists.class)
+                        .getDeclaredMethods()
+                        .filter(
+                            ElementMatchers.named("newArrayList")
+                                .and(ElementMatchers.takesArguments(Iterable.class)))
+                        .getOnly()));
+        return new ShortCircuitReturnNull(readValue, transformedList);
       }
-      // TODO: Don't copy if already a list!
-      StackManipulation transformedList =
+      StackManipulation toListManipulation =
           new Compound(
-              readTrasformedValue,
+              readValue,
               MethodInvocation.invoke(
-                  new ForLoadedType(Lists.class)
+                  BYTE_BUDDY_UTILS_TYPE
                       .getDeclaredMethods()
-                      .filter(
-                          ElementMatchers.named("newArrayList")
-                              .and(ElementMatchers.takesArguments(Iterable.class)))
+                      .filter(ElementMatchers.named("toList"))
                       .getOnly()));
-      return new ShortCircuitReturnNull(readValue, transformedList);
+      return new ShortCircuitReturnNull(readValue, toListManipulation);
     }
 
     @Override
@@ -1267,9 +1416,8 @@ public class ByteBuddyUtils {
       Type rowKeyType = getFactory().createTypeConversion(false).convert(keyElementType);
       Type rowValueType = getFactory().createTypeConversion(false).convert(valueElementType);
 
-      StackManipulation readTrasformedValue = readValue;
-      if (!keyElementType.hasUnresolvedParameters()
-          && !valueElementType.hasUnresolvedParameters()) {
+      if (!hasIdentityElementConversion(keyElementType)
+          || !hasIdentityElementConversion(valueElementType)) {
         ForLoadedType keyConversionFunction =
             new ForLoadedType(
                 createCollectionTransformFunction(
@@ -1282,7 +1430,7 @@ public class ByteBuddyUtils {
                     TypeDescriptor.of(rowValueType).getRawType(),
                     valueElementType.getRawType(),
                     (s) -> getFactory().createSetterConversions(s).convert(valueElementType)));
-        readTrasformedValue =
+        StackManipulation readTrasformedValue =
             new Compound(
                 readValue,
                 TypeCreation.of(keyConversionFunction),
@@ -1306,8 +1454,9 @@ public class ByteBuddyUtils {
                         .getDeclaredMethods()
                         .filter(ElementMatchers.named("getTransformingMap"))
                         .getOnly()));
+        return new ShortCircuitReturnNull(readValue, readTrasformedValue);
       }
-      return new ShortCircuitReturnNull(readValue, readTrasformedValue);
+      return readValue;
     }
 
     @Override
@@ -1679,6 +1828,37 @@ public class ByteBuddyUtils {
 
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new ByteCodeAppender.Size(size.getMaximalSize(), numLocals);
+      };
+    }
+
+    public Implementation fromRowImplementation() {
+      return new Implementation() {
+        @Override
+        public InstrumentedType prepare(InstrumentedType instrumentedType) {
+          return instrumentedType;
+        }
+
+        @Override
+        public ByteCodeAppender appender(Target implementationTarget) {
+          return (methodVisitor, implementationContext, instrumentedMethod) -> {
+            int numLocals = 1 + instrumentedMethod.getParameters().size();
+            StackManipulation stackManipulation = beforePushingParameters();
+            for (int i = 0; i < parameters.size(); i++) {
+              int fieldIndex = Preconditions.checkStateNotNull(fieldMapping.get(i));
+              FieldValueTypeInformation fieldType = fields.get(fieldIndex);
+              stackManipulation =
+                  new StackManipulation.Compound(
+                      stackManipulation,
+                      readAndConvertRowField(fieldType, fieldIndex, typeConversionsFactory));
+            }
+            stackManipulation =
+                new StackManipulation.Compound(
+                    stackManipulation, afterPushingParameters(), MethodReturn.REFERENCE);
+            StackManipulation.Size size =
+                stackManipulation.apply(methodVisitor, implementationContext);
+            return new ByteCodeAppender.Size(size.getMaximalSize(), numLocals);
+          };
+        }
       };
     }
 

@@ -22,6 +22,7 @@ import static org.apache.beam.sdk.util.ByteBuddyUtils.getClassLoadingStrategy;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -32,15 +33,20 @@ import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.method.MethodDescription.ForLoadedMethod;
 import net.bytebuddy.description.type.TypeDescription;
+import net.bytebuddy.description.type.TypeDescription.ForLoadedType;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
 import net.bytebuddy.implementation.FixedValue;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender.Size;
+import net.bytebuddy.implementation.bytecode.Duplication;
 import net.bytebuddy.implementation.bytecode.Removal;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.implementation.bytecode.TypeCreation;
 import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
+import net.bytebuddy.implementation.bytecode.collection.ArrayAccess;
+import net.bytebuddy.implementation.bytecode.constant.IntegerConstant;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
@@ -55,6 +61,7 @@ import org.apache.beam.sdk.schemas.SchemaUserTypeCreator;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.ConstructorCreateInstruction;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.InjectPackageStrategy;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.StaticFactoryMethodInstruction;
+import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.TypeConversion;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.TypeConversionsFactory;
 import org.apache.beam.sdk.schemas.utils.ReflectUtils.TypeDescriptorWithSchema;
 import org.apache.beam.sdk.util.Preconditions;
@@ -207,11 +214,94 @@ public class JavaBeanUtils {
           DynamicType.Builder<FieldValueGetter<ObjectT, ValueT>> builder,
           FieldValueTypeInformation typeInformation,
           TypeConversionsFactory typeConversionsFactory) {
-    return builder
-        .method(ElementMatchers.named("name"))
-        .intercept(FixedValue.reference(typeInformation.getName()))
-        .method(ElementMatchers.named("get"))
-        .intercept(new InvokeGetterInstruction(typeInformation, typeConversionsFactory));
+    builder =
+        builder
+            .method(ElementMatchers.named("name"))
+            .intercept(FixedValue.reference(typeInformation.getName()))
+            .method(ElementMatchers.named("get"))
+            .intercept(new InvokeGetterInstruction(typeInformation, typeConversionsFactory));
+    Method method =
+        Preconditions.checkArgumentNotNull(typeInformation.getMethod(), GETTER_WITH_NULL_METHOD_ERROR);
+    Class<?> rawType = method.getReturnType();
+    if (rawType.isPrimitive()) {
+      String getterMethodName = ByteBuddyUtils.primitiveGetterMethodName(rawType);
+      if (getterMethodName != null) {
+        builder =
+            builder
+                .method(ElementMatchers.named("isNull"))
+                .intercept(FixedValue.value(false))
+                .method(ElementMatchers.named(getterMethodName))
+                .intercept(new InvokePrimitiveGetterInstruction(method));
+      }
+    } else {
+      builder =
+          builder
+              .method(ElementMatchers.named("isNull"))
+              .intercept(new IsNullGetterInstruction(method));
+    }
+    return builder;
+  }
+
+  private static class IsNullGetterInstruction implements Implementation {
+    private final Method method;
+
+    IsNullGetterInstruction(Method method) {
+      this.method = method;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(final Target implementationTarget) {
+      return (methodVisitor, implementationContext, instrumentedMethod) -> {
+        int numLocals = 1 + instrumentedMethod.getParameters().size();
+        StackManipulation stackManipulation =
+            new StackManipulation.Compound(
+                MethodVariableAccess.REFERENCE.loadFrom(1),
+                TypeCasting.to(TypeDescription.ForLoadedType.of(method.getDeclaringClass())),
+                MethodInvocation.invoke(new ForLoadedMethod(method)));
+        StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
+        net.bytebuddy.jar.asm.Label isNullLabel = new net.bytebuddy.jar.asm.Label();
+        methodVisitor.visitJumpInsn(net.bytebuddy.jar.asm.Opcodes.IFNULL, isNullLabel);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.ICONST_0);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.IRETURN);
+        methodVisitor.visitLabel(isNullLabel);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.ICONST_1);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.IRETURN);
+        return new Size(size.getMaximalSize() + 1, numLocals);
+      };
+    }
+  }
+
+  private static class InvokePrimitiveGetterInstruction implements Implementation {
+    private final Method method;
+
+    InvokePrimitiveGetterInstruction(Method method) {
+      this.method = method;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(final Target implementationTarget) {
+      return (methodVisitor, implementationContext, instrumentedMethod) -> {
+        int numLocals = 1 + instrumentedMethod.getParameters().size();
+        StackManipulation stackManipulation =
+            new StackManipulation.Compound(
+                MethodVariableAccess.REFERENCE.loadFrom(1),
+                TypeCasting.to(TypeDescription.ForLoadedType.of(method.getDeclaringClass())),
+                MethodInvocation.invoke(new ForLoadedMethod(method)),
+                MethodReturn.of(TypeDescription.ForLoadedType.of(method.getReturnType())));
+        StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
+        return new Size(size.getMaximalSize(), numLocals);
+      };
+    }
   }
 
   // The list of setters for a class is cached, so we only create the classes the first time
@@ -342,14 +432,16 @@ public class JavaBeanUtils {
       List<FieldValueTypeInformation> types,
       TypeConversionsFactory typeConversionsFactory) {
     try {
+      ConstructorCreateInstruction createInstruction =
+          new ConstructorCreateInstruction(types, clazz, constructor, typeConversionsFactory);
       DynamicType.Builder<SchemaUserTypeCreator> builder =
           BYTE_BUDDY
               .with(new InjectPackageStrategy(clazz))
               .subclass(SchemaUserTypeCreator.class)
               .method(ElementMatchers.named("create"))
-              .intercept(
-                  new ConstructorCreateInstruction(
-                      types, clazz, constructor, typeConversionsFactory));
+              .intercept(createInstruction)
+              .method(ElementMatchers.named("fromRow"))
+              .intercept(createInstruction.fromRowImplementation());
       return builder
           .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
           .make()
@@ -391,14 +483,16 @@ public class JavaBeanUtils {
       List<FieldValueTypeInformation> types,
       TypeConversionsFactory typeConversionsFactory) {
     try {
+      StaticFactoryMethodInstruction createInstruction =
+          new StaticFactoryMethodInstruction(types, clazz, creator, typeConversionsFactory);
       DynamicType.Builder<SchemaUserTypeCreator> builder =
           BYTE_BUDDY
               .with(new InjectPackageStrategy(clazz))
               .subclass(SchemaUserTypeCreator.class)
               .method(ElementMatchers.named("create"))
-              .intercept(
-                  new StaticFactoryMethodInstruction(
-                      types, clazz, creator, typeConversionsFactory));
+              .intercept(createInstruction)
+              .method(ElementMatchers.named("fromRow"))
+              .intercept(createInstruction.fromRowImplementation());
 
       return builder
           .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
@@ -415,6 +509,56 @@ public class JavaBeanUtils {
         | InvocationTargetException e) {
       throw new RuntimeException(
           "Unable to generate a creator for " + clazz + " with schema " + schema);
+    }
+  }
+
+  public static SchemaUserTypeCreator getSetterCreator(
+      TypeDescriptor<?> typeDescriptor,
+      Schema schema,
+      FieldValueTypeSupplier fieldValueTypeSupplier,
+      TypeConversionsFactory typeConversionsFactory) {
+    return CACHED_CREATORS.computeIfAbsent(
+        TypeDescriptorWithSchema.create(typeDescriptor, schema),
+        c -> {
+          List<FieldValueTypeInformation> types =
+              fieldValueTypeSupplier.get(typeDescriptor, schema);
+          return createSetterCreator(
+              typeDescriptor.getRawType(), schema, types, typeConversionsFactory);
+        });
+  }
+
+  public static <T> SchemaUserTypeCreator createSetterCreator(
+      Class<T> clazz,
+      Schema schema,
+      List<FieldValueTypeInformation> types,
+      TypeConversionsFactory typeConversionsFactory) {
+    try {
+      SetterCreateInstruction createInstruction =
+          new SetterCreateInstruction(types, clazz, typeConversionsFactory);
+      DynamicType.Builder<SchemaUserTypeCreator> builder =
+          BYTE_BUDDY
+              .with(new InjectPackageStrategy(clazz))
+              .subclass(SchemaUserTypeCreator.class)
+              .method(ElementMatchers.named("create"))
+              .intercept(createInstruction)
+              .method(ElementMatchers.named("fromRow"))
+              .intercept(createInstruction.fromRowImplementation());
+
+      return builder
+          .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
+          .make()
+          .load(
+              ReflectHelpers.findClassLoader(clazz.getClassLoader()),
+              getClassLoadingStrategy(clazz))
+          .getLoaded()
+          .getDeclaredConstructor()
+          .newInstance();
+    } catch (InstantiationException
+        | IllegalAccessException
+        | NoSuchMethodException
+        | InvocationTargetException e) {
+      throw new RuntimeException(
+          "Unable to generate a creator for class " + clazz + " with schema " + schema, e);
     }
   }
 
@@ -528,6 +672,132 @@ public class JavaBeanUtils {
 
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new Size(size.getMaximalSize(), numLocals);
+      };
+    }
+  }
+
+  // Implements a method to construct an object using a default constructor and setter methods.
+  static class SetterCreateInstruction implements Implementation {
+    private final List<FieldValueTypeInformation> typeInformations;
+    private final Class<?> beanClass;
+    private final TypeConversionsFactory typeConversionsFactory;
+
+    SetterCreateInstruction(
+        List<FieldValueTypeInformation> typeInformations,
+        Class<?> beanClass,
+        TypeConversionsFactory typeConversionsFactory) {
+      this.typeInformations = typeInformations;
+      this.beanClass = beanClass;
+      this.typeConversionsFactory = typeConversionsFactory;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(final Target implementationTarget) {
+      return (methodVisitor, implementationContext, instrumentedMethod) -> {
+        int numLocals = 1 + instrumentedMethod.getParameters().size();
+
+        ForLoadedType loadedType = new ForLoadedType(beanClass);
+        StackManipulation stackManipulation =
+            new StackManipulation.Compound(
+                TypeCreation.of(loadedType),
+                Duplication.SINGLE,
+                MethodInvocation.invoke(
+                    loadedType
+                        .getDeclaredMethods()
+                        .filter(
+                            ElementMatchers.isConstructor().and(ElementMatchers.takesArguments(0)))
+                        .getOnly()));
+
+        TypeConversion<Type> convertType = typeConversionsFactory.createTypeConversion(true);
+        for (int i = 0; i < typeInformations.size(); ++i) {
+          FieldValueTypeInformation typeInformation = typeInformations.get(i);
+          Method method =
+              Preconditions.checkStateNotNull(
+                  typeInformation.getMethod(), SETTER_WITH_NULL_METHOD_ERROR);
+          boolean setterMethodReturnsVoid = method.getReturnType().equals(Void.TYPE);
+
+          ForLoadedType convertedType =
+              new ForLoadedType((Class) convertType.convert(typeInformation.getType()));
+
+          StackManipulation readParameter =
+              new StackManipulation.Compound(
+                  MethodVariableAccess.REFERENCE.loadFrom(1),
+                  IntegerConstant.forValue(i),
+                  ArrayAccess.REFERENCE.load(),
+                  TypeCasting.to(convertedType));
+
+          StackManipulation invokeSetter =
+              new StackManipulation.Compound(
+                  Duplication.SINGLE,
+                  typeConversionsFactory
+                      .createSetterConversions(readParameter)
+                      .convert(typeInformation.getType()),
+                  MethodInvocation.invoke(new ForLoadedMethod(method)));
+          if (!setterMethodReturnsVoid) {
+            invokeSetter = new StackManipulation.Compound(invokeSetter, Removal.SINGLE);
+          }
+          stackManipulation = new StackManipulation.Compound(stackManipulation, invokeSetter);
+        }
+        stackManipulation =
+            new StackManipulation.Compound(stackManipulation, MethodReturn.REFERENCE);
+
+        StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
+        return new Size(size.getMaximalSize(), numLocals);
+      };
+    }
+
+    public Implementation fromRowImplementation() {
+      return new Implementation() {
+        @Override
+        public InstrumentedType prepare(InstrumentedType instrumentedType) {
+          return instrumentedType;
+        }
+
+        @Override
+        public ByteCodeAppender appender(Target implementationTarget) {
+          return (methodVisitor, implementationContext, instrumentedMethod) -> {
+            int numLocals = 1 + instrumentedMethod.getParameters().size();
+            ForLoadedType loadedType = new ForLoadedType(beanClass);
+            StackManipulation stackManipulation =
+                new StackManipulation.Compound(
+                    TypeCreation.of(loadedType),
+                    Duplication.SINGLE,
+                    MethodInvocation.invoke(
+                        loadedType
+                            .getDeclaredMethods()
+                            .filter(
+                                ElementMatchers.isConstructor()
+                                    .and(ElementMatchers.takesArguments(0)))
+                            .getOnly()));
+            for (int i = 0; i < typeInformations.size(); ++i) {
+              FieldValueTypeInformation typeInformation = typeInformations.get(i);
+              Method method =
+                  Preconditions.checkStateNotNull(
+                      typeInformation.getMethod(), SETTER_WITH_NULL_METHOD_ERROR);
+              boolean setterMethodReturnsVoid = method.getReturnType().equals(Void.TYPE);
+              StackManipulation invokeSetter =
+                  new StackManipulation.Compound(
+                      Duplication.SINGLE,
+                      ByteBuddyUtils.readAndConvertRowField(
+                          typeInformation, i, typeConversionsFactory),
+                      MethodInvocation.invoke(new ForLoadedMethod(method)));
+              if (!setterMethodReturnsVoid) {
+                invokeSetter = new StackManipulation.Compound(invokeSetter, Removal.SINGLE);
+              }
+              stackManipulation = new StackManipulation.Compound(stackManipulation, invokeSetter);
+            }
+            stackManipulation =
+                new StackManipulation.Compound(stackManipulation, MethodReturn.REFERENCE);
+            StackManipulation.Size size =
+                stackManipulation.apply(methodVisitor, implementationContext);
+            return new Size(size.getMaximalSize(), numLocals);
+          };
+        }
       };
     }
   }

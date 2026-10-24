@@ -100,15 +100,7 @@ class FromRowUsingCreator<T> implements SerializableFunction<Row, T>, Function<R
     }
     int fieldCount = row.getFieldCount();
     checkState(converters.length == fieldCount, "Unexpected field count");
-
-    Object[] params = new Object[fieldCount];
-    for (int i = 0; i < fieldCount; ++i) {
-      Object value = row.getValue(i);
-      Function converter = converters[i];
-      params[i] =
-          (value != null && converter != FieldConverter.IDENTITY) ? converter.apply(value) : value;
-    }
-    return (T) typeCreator.create(params);
+    return (T) typeCreator.fromRow(row, converters);
   }
 
   private synchronized void initFieldConverters(Schema schema) {
@@ -132,7 +124,9 @@ class FromRowUsingCreator<T> implements SerializableFunction<Row, T>, Function<R
         "Did not have a matching number of type informations and fields.");
     Function[] converters = new Function[schema.getFieldCount()];
     for (int i = 0; i < converters.length; i++) {
-      converters[i] = fieldConverter(schema.getField(i).getType(), typeInfos.get(i), typeFactory);
+      Function converter =
+          fieldConverter(schema.getField(i).getType(), typeInfos.get(i), typeFactory);
+      converters[i] = (converter == FieldConverter.IDENTITY) ? null : converter;
     }
     return converters;
   }

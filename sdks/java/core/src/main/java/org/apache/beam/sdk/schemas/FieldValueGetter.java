@@ -19,6 +19,7 @@ package org.apache.beam.sdk.schemas;
 
 import java.io.Serializable;
 import org.apache.beam.sdk.annotations.Internal;
+import org.apache.beam.sdk.util.Preconditions;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
@@ -36,6 +37,38 @@ public interface FieldValueGetter<ObjectT extends @NonNull Object, ValueT> exten
   /** Returns the raw value of the getter before any further transformations. */
   default @Nullable Object getRaw(ObjectT object) {
     return get(object);
+  }
+
+  default boolean isNull(ObjectT object) {
+    return get(object) == null;
+  }
+
+  default byte getByte(ObjectT object) {
+    return ((Byte) Preconditions.checkStateNotNull(get(object))).byteValue();
+  }
+
+  default short getInt16(ObjectT object) {
+    return ((Short) Preconditions.checkStateNotNull(get(object))).shortValue();
+  }
+
+  default int getInt32(ObjectT object) {
+    return ((Integer) Preconditions.checkStateNotNull(get(object))).intValue();
+  }
+
+  default long getInt64(ObjectT object) {
+    return ((Long) Preconditions.checkStateNotNull(get(object))).longValue();
+  }
+
+  default float getFloat(ObjectT object) {
+    return ((Float) Preconditions.checkStateNotNull(get(object))).floatValue();
+  }
+
+  default double getDouble(ObjectT object) {
+    return ((Double) Preconditions.checkStateNotNull(get(object))).doubleValue();
+  }
+
+  default boolean getBoolean(ObjectT object) {
+    return ((Boolean) Preconditions.checkStateNotNull(get(object))).booleanValue();
   }
 
   String name();

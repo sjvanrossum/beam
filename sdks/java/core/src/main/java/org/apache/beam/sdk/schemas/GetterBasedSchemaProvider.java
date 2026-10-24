@@ -336,7 +336,8 @@ public abstract class GetterBasedSchemaProvider implements SchemaProvider {
             .withFieldValueGetters(
                 factory,
                 value,
-                valueType != null ? valueType : TypeDescriptor.of(value.getClass()));
+                Optional.<TypeDescriptor>ofNullable(valueType)
+                    .orElseGet(() -> TypeDescriptor.of(value.getClass())));
       }
     }
 
@@ -492,6 +493,11 @@ public abstract class GetterBasedSchemaProvider implements SchemaProvider {
       @Override
       public @Nullable Object getRaw(ObjectT object) {
         return getter.getRaw(object);
+      }
+
+      @Override
+      public boolean isNull(ObjectT object) {
+        return getter.isNull(object);
       }
 
       @Override

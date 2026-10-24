@@ -567,9 +567,12 @@ public abstract class RowCoderGenerator {
           mv.visitInsn(Opcodes.RETURN);
 
           mv.visitLabel(fallbackLabel);
+          emitUnrolledGeneralRowEncode(mv);
+          mv.visitInsn(Opcodes.RETURN);
+          return new ByteCodeAppender.Size(8, 6);
         }
 
-        // Fallback to static delegate for RowWithGetters or >64 fields
+        // Fallback to static delegate for >64 fields
         emitLdcConstant(mv, "CODERS", Coder[].class, componentCoders);
         emitLdcConstant(mv, "POSITIONS", int[].class, encodingPosToRowIndex);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
@@ -584,6 +587,339 @@ public abstract class RowCoderGenerator {
         mv.visitInsn(Opcodes.RETURN);
         return new ByteCodeAppender.Size(8, 6);
       };
+    }
+
+    private void emitUnrolledGeneralRowEncode(MethodVisitor mv) {
+      int fieldCount = schema.getFieldCount();
+      // Local 3: Row row
+      mv.visitVarInsn(Opcodes.ALOAD, 1);
+      mv.visitTypeInsn(Opcodes.CHECKCAST, INTERNAL_ROW_NAME);
+      mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+      // Local 4..5: long wireNullMask (bits in wire encPos order)
+      if (hasNullableFields) {
+        mv.visitInsn(Opcodes.LCONST_0);
+        for (int encPos = 0; encPos < fieldCount; encPos++) {
+          int rowIdx = encodingPosToRowIndex[encPos];
+          if (schema.getField(rowIdx).getType().getNullable()) {
+            Label notNull = new Label();
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            pushInt(mv, rowIdx);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "isNull", "(I)Z", false);
+            mv.visitJumpInsn(Opcodes.IFEQ, notNull);
+            mv.visitLdcInsn(1L << encPos);
+            mv.visitInsn(Opcodes.LOR);
+            mv.visitLabel(notNull);
+          }
+        }
+        mv.visitVarInsn(Opcodes.LSTORE, 4);
+      }
+
+      if (!staticEncoding) {
+        pushInt(mv, fieldCount);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            INTERNAL_VARINT_NAME,
+            "encode",
+            "(I" + OUTPUT_STREAM_DESC + ")V",
+            false);
+
+        if (!hasNullableFields) {
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitInsn(Opcodes.ICONST_0);
+          mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/OutputStream", "write", "(I)V", false);
+        } else {
+          mv.visitVarInsn(Opcodes.LLOAD, 4);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeNullMask",
+              "(J" + OUTPUT_STREAM_DESC + ")V",
+              false);
+        }
+      }
+
+      for (int encPos = 0; encPos < fieldCount; encPos++) {
+        int rowIdx = encodingPosToRowIndex[encPos];
+        Field field = schema.getField(rowIdx);
+        FieldType ft = field.getType();
+
+        Label skipField = new Label();
+        if (ft.getNullable()) {
+          mv.visitVarInsn(Opcodes.LLOAD, 4);
+          mv.visitLdcInsn(1L << encPos);
+          mv.visitInsn(Opcodes.LAND);
+          mv.visitInsn(Opcodes.LCONST_0);
+          mv.visitInsn(Opcodes.LCMP);
+          mv.visitJumpInsn(Opcodes.IFNE, skipField);
+        }
+
+        emitEncodeGeneralRowSingleField(mv, encPos, rowIdx, componentCoders[encPos], ft);
+
+        if (ft.getNullable()) {
+          mv.visitLabel(skipField);
+        }
+      }
+    }
+
+    private static void emitEncodeGeneralRowSingleField(
+        MethodVisitor mv, int encPos, int rowIdx, Coder<?> fieldCoder, FieldType ft) {
+      TypeName typeName = ft.getTypeName();
+      switch (typeName) {
+        case BYTE:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getPrimitiveByte", "(I)B", false);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeByte",
+              "(B" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case INT16:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getPrimitiveInt16", "(I)S", false);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeShort",
+              "(S" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case INT32:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getPrimitiveInt32", "(I)I", false);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_VARINT_NAME,
+              "encode",
+              "(I" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case INT64:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getPrimitiveInt64", "(I)J", false);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_VARINT_NAME,
+              "encode",
+              "(J" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case FLOAT:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getPrimitiveFloat", "(I)F", false);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeFloat",
+              "(F" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case DOUBLE:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getPrimitiveDouble", "(I)D", false);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeDouble",
+              "(D" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case BOOLEAN:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getPrimitiveBoolean", "(I)Z", false);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeBoolean",
+              "(Z" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case STRING:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/String");
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeString",
+              "(Ljava/lang/String;" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case BYTES:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+          mv.visitTypeInsn(Opcodes.CHECKCAST, "[B");
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeBytes",
+              "([B" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case DECIMAL:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/math/BigDecimal");
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeDecimal",
+              "(Ljava/math/BigDecimal;" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case DATETIME:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          pushInt(mv, rowIdx);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+          mv.visitTypeInsn(Opcodes.CHECKCAST, "org/joda/time/ReadableInstant");
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeDateTime",
+              "(Lorg/joda/time/ReadableInstant;" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case ROW:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            pushInt(mv, rowIdx);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+            mv.visitTypeInsn(Opcodes.CHECKCAST, INTERNAL_ROW_NAME);
+            mv.visitVarInsn(Opcodes.ALOAD, 2);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "encode",
+                "(" + ROW_DESC + OUTPUT_STREAM_DESC + ")V",
+                false);
+            break;
+          }
+        case MAP:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            pushInt(mv, rowIdx);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+            mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Map");
+            mv.visitVarInsn(Opcodes.ALOAD, 2);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "encode",
+                "(Ljava/util/Map;" + OUTPUT_STREAM_DESC + ")V",
+                false);
+            break;
+          }
+        case ARRAY:
+        case ITERABLE:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            pushInt(mv, rowIdx);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+            mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Iterable");
+            mv.visitVarInsn(Opcodes.ALOAD, 2);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "encode",
+                "(Ljava/lang/Iterable;" + OUTPUT_STREAM_DESC + ")V",
+                false);
+            break;
+          }
+        case LOGICAL_TYPE:
+          {
+            LogicalType<?, ?> logicalType = ft.getLogicalType();
+            TypeName baseTypeName = logicalType.getBaseType().getTypeName();
+            if (baseTypeName == TypeName.INT64
+                || baseTypeName == TypeName.INT32
+                || baseTypeName == TypeName.STRING) {
+              String helperName =
+                  baseTypeName == TypeName.INT64
+                      ? "writeLogicalLong"
+                      : (baseTypeName == TypeName.INT32 ? "writeLogicalInt" : "writeLogicalString");
+              emitLdcConstant(mv, "LOGICAL_" + encPos, LogicalType.class, logicalType);
+              mv.visitVarInsn(Opcodes.ALOAD, 3);
+              pushInt(mv, rowIdx);
+              mv.visitMethodInsn(
+                  Opcodes.INVOKEVIRTUAL,
+                  INTERNAL_ROW_NAME,
+                  "getValue",
+                  "(I)" + OBJECT_DESC,
+                  false);
+              mv.visitVarInsn(Opcodes.ALOAD, 2);
+              mv.visitMethodInsn(
+                  Opcodes.INVOKESTATIC,
+                  INTERNAL_GENERATOR_NAME,
+                  helperName,
+                  "(" + LOGICAL_TYPE_DESC + OBJECT_DESC + OUTPUT_STREAM_DESC + ")V",
+                  false);
+              break;
+            }
+          }
+          // Fall through for other logical types
+        default:
+          {
+            Class<?> coderClass = accessibleCoderClass(fieldCoder.getClass());
+            emitLdcConstant(mv, "CODER_" + encPos, coderClass, fieldCoder);
+            mv.visitVarInsn(Opcodes.ALOAD, 3);
+            pushInt(mv, rowIdx);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
+            mv.visitVarInsn(Opcodes.ALOAD, 2);
+            mv.visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                Type.getInternalName(coderClass),
+                "encode",
+                "(" + OBJECT_DESC + OUTPUT_STREAM_DESC + ")V",
+                false);
+            break;
+          }
+      }
     }
 
     private void emitUnrolledEncode(MethodVisitor mv, String rowInternal) {

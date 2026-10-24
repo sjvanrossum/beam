@@ -56,6 +56,32 @@ class SetterBasedCreatorFactory implements Factory<SchemaUserTypeCreator> {
         }
         return object;
       }
+
+      @Override
+      @SuppressWarnings("unchecked")
+      public Object fromRow(
+          org.apache.beam.sdk.values.Row row,
+          org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Function[]
+              fieldConverters) {
+        Object object;
+        try {
+          object = typeDescriptor.getRawType().getDeclaredConstructor().newInstance();
+        } catch (NoSuchMethodException
+            | IllegalAccessException
+            | InvocationTargetException
+            | InstantiationException e) {
+          throw new RuntimeException("Failed to instantiate object ", e);
+        }
+        int fieldCount = row.getFieldCount();
+        for (int i = 0; i < fieldCount; ++i) {
+          FieldValueSetter setter = setters.get(i);
+          Object value = row.getValue(i);
+          org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Function converter =
+              fieldConverters[i];
+          setter.set(object, (value != null && converter != null) ? converter.apply(value) : value);
+        }
+        return object;
+      }
     };
   }
 }

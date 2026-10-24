@@ -153,12 +153,16 @@ public class POJOUtils {
       List<FieldValueTypeInformation> types,
       TypeConversionsFactory typeConversionsFactory) {
     try {
+      SetFieldCreateInstruction createInstruction =
+          new SetFieldCreateInstruction(types, clazz, typeConversionsFactory);
       DynamicType.Builder<SchemaUserTypeCreator> builder =
           BYTE_BUDDY
               .with(new InjectPackageStrategy(clazz))
               .subclass(SchemaUserTypeCreator.class)
               .method(ElementMatchers.named("create"))
-              .intercept(new SetFieldCreateInstruction(types, clazz, typeConversionsFactory));
+              .intercept(createInstruction)
+              .method(ElementMatchers.named("fromRow"))
+              .intercept(createInstruction.fromRowImplementation());
 
       return builder
           .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
@@ -206,14 +210,16 @@ public class POJOUtils {
       List<FieldValueTypeInformation> types,
       TypeConversionsFactory typeConversionsFactory) {
     try {
+      ConstructorCreateInstruction createInstruction =
+          new ConstructorCreateInstruction(types, clazz, constructor, typeConversionsFactory);
       DynamicType.Builder<SchemaUserTypeCreator> builder =
           BYTE_BUDDY
               .with(new InjectPackageStrategy(clazz))
               .subclass(SchemaUserTypeCreator.class)
               .method(ElementMatchers.named("create"))
-              .intercept(
-                  new ConstructorCreateInstruction(
-                      types, clazz, constructor, typeConversionsFactory));
+              .intercept(createInstruction)
+              .method(ElementMatchers.named("fromRow"))
+              .intercept(createInstruction.fromRowImplementation());
 
       return builder
           .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
@@ -256,14 +262,16 @@ public class POJOUtils {
       List<FieldValueTypeInformation> types,
       TypeConversionsFactory typeConversionsFactory) {
     try {
+      StaticFactoryMethodInstruction createInstruction =
+          new StaticFactoryMethodInstruction(types, clazz, creator, typeConversionsFactory);
       DynamicType.Builder<SchemaUserTypeCreator> builder =
           BYTE_BUDDY
               .with(new InjectPackageStrategy(clazz))
               .subclass(SchemaUserTypeCreator.class)
               .method(ElementMatchers.named("create"))
-              .intercept(
-                  new StaticFactoryMethodInstruction(
-                      types, clazz, creator, typeConversionsFactory));
+              .intercept(createInstruction)
+              .method(ElementMatchers.named("fromRow"))
+              .intercept(createInstruction.fromRowImplementation());
 
       return builder
           .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
@@ -326,12 +334,93 @@ public class POJOUtils {
           DynamicType.Builder<FieldValueGetter<@NonNull ObjectT, ValueT>> builder,
           FieldValueTypeInformation typeInformation,
           TypeConversionsFactory typeConversionsFactory) {
-    return builder
-        .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
-        .method(ElementMatchers.named("name"))
-        .intercept(FixedValue.reference(typeInformation.getName()))
-        .method(ElementMatchers.named("get"))
-        .intercept(new ReadFieldInstruction(typeInformation, typeConversionsFactory));
+    builder =
+        builder
+            .visit(new AsmVisitorWrapper.ForDeclaredMethods().writerFlags(ClassWriter.COMPUTE_FRAMES))
+            .method(ElementMatchers.named("name"))
+            .intercept(FixedValue.reference(typeInformation.getName()))
+            .method(ElementMatchers.named("get"))
+            .intercept(new ReadFieldInstruction(typeInformation, typeConversionsFactory));
+    Class<?> rawType = typeInformation.getField().getType();
+    if (rawType.isPrimitive()) {
+      String getterMethodName = ByteBuddyUtils.primitiveGetterMethodName(rawType);
+      if (getterMethodName != null) {
+        builder =
+            builder
+                .method(ElementMatchers.named("isNull"))
+                .intercept(FixedValue.value(false))
+                .method(ElementMatchers.named(getterMethodName))
+                .intercept(new ReadPrimitiveFieldInstruction(typeInformation.getField()));
+      }
+    } else {
+      builder =
+          builder
+              .method(ElementMatchers.named("isNull"))
+              .intercept(new IsNullFieldInstruction(typeInformation.getField()));
+    }
+    return builder;
+  }
+
+  static class IsNullFieldInstruction implements Implementation {
+    private final Field field;
+
+    IsNullFieldInstruction(Field field) {
+      this.field = field;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(final Target implementationTarget) {
+      return (methodVisitor, implementationContext, instrumentedMethod) -> {
+        int numLocals = 1 + instrumentedMethod.getParameters().size();
+        StackManipulation stackManipulation =
+            new StackManipulation.Compound(
+                MethodVariableAccess.REFERENCE.loadFrom(1),
+                TypeCasting.to(TypeDescription.ForLoadedType.of(field.getDeclaringClass())),
+                FieldAccess.forField(new ForLoadedField(field)).read());
+        StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
+        net.bytebuddy.jar.asm.Label isNullLabel = new net.bytebuddy.jar.asm.Label();
+        methodVisitor.visitJumpInsn(net.bytebuddy.jar.asm.Opcodes.IFNULL, isNullLabel);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.ICONST_0);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.IRETURN);
+        methodVisitor.visitLabel(isNullLabel);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.ICONST_1);
+        methodVisitor.visitInsn(net.bytebuddy.jar.asm.Opcodes.IRETURN);
+        return new Size(size.getMaximalSize() + 1, numLocals);
+      };
+    }
+  }
+
+  static class ReadPrimitiveFieldInstruction implements Implementation {
+    private final Field field;
+
+    ReadPrimitiveFieldInstruction(Field field) {
+      this.field = field;
+    }
+
+    @Override
+    public InstrumentedType prepare(InstrumentedType instrumentedType) {
+      return instrumentedType;
+    }
+
+    @Override
+    public ByteCodeAppender appender(final Target implementationTarget) {
+      return (methodVisitor, implementationContext, instrumentedMethod) -> {
+        int numLocals = 1 + instrumentedMethod.getParameters().size();
+        StackManipulation stackManipulation =
+            new StackManipulation.Compound(
+                MethodVariableAccess.REFERENCE.loadFrom(1),
+                TypeCasting.to(TypeDescription.ForLoadedType.of(field.getDeclaringClass())),
+                FieldAccess.forField(new ForLoadedField(field)).read(),
+                MethodReturn.of(TypeDescription.ForLoadedType.of(field.getType())));
+        StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
+        return new Size(size.getMaximalSize(), numLocals);
+      };
+    }
   }
 
   // Implements a method to read a public field out of an object.
@@ -502,6 +591,50 @@ public class POJOUtils {
 
         StackManipulation.Size size = stackManipulation.apply(methodVisitor, implementationContext);
         return new Size(size.getMaximalSize(), numLocals);
+      };
+    }
+
+    public Implementation fromRowImplementation() {
+      return new Implementation() {
+        @Override
+        public InstrumentedType prepare(InstrumentedType instrumentedType) {
+          return instrumentedType;
+        }
+
+        @Override
+        public ByteCodeAppender appender(Target implementationTarget) {
+          return (methodVisitor, implementationContext, instrumentedMethod) -> {
+            int numLocals = 1 + instrumentedMethod.getParameters().size();
+            ForLoadedType loadedType = new ForLoadedType(pojoClass);
+            StackManipulation stackManipulation =
+                new StackManipulation.Compound(
+                    TypeCreation.of(loadedType),
+                    Duplication.SINGLE,
+                    MethodInvocation.invoke(
+                        loadedType
+                            .getDeclaredMethods()
+                            .filter(
+                                ElementMatchers.isConstructor()
+                                    .and(ElementMatchers.takesArguments(0)))
+                            .getOnly()));
+            for (int i = 0; i < typeInformations.size(); ++i) {
+              FieldValueTypeInformation typeInformation = typeInformations.get(i);
+              Field field = typeInformation.getField();
+              StackManipulation updateField =
+                  new StackManipulation.Compound(
+                      Duplication.SINGLE,
+                      ByteBuddyUtils.readAndConvertRowField(
+                          typeInformation, i, typeConversionsFactory),
+                      FieldAccess.forField(new ForLoadedField(field)).write());
+              stackManipulation = new StackManipulation.Compound(stackManipulation, updateField);
+            }
+            stackManipulation =
+                new StackManipulation.Compound(stackManipulation, MethodReturn.REFERENCE);
+            StackManipulation.Size size =
+                stackManipulation.apply(methodVisitor, implementationContext);
+            return new Size(size.getMaximalSize(), numLocals);
+          };
+        }
       };
     }
   }

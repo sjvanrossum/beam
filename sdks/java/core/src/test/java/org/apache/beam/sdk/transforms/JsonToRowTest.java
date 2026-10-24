@@ -317,6 +317,9 @@ public class JsonToRowTest implements Serializable {
     PCollection<Row> personRows = results.getResults();
     PCollection<Row> errorsWithMsg = results.getFailedToParseLines();
 
+    org.hamcrest.MatcherAssert.assertThat(
+        errorsWithMsg.getSchema(), org.hamcrest.Matchers.equalTo(customSchema));
+
     PAssert.that(personRows).containsInAnyOrder(PERSON_ROWS);
 
     PAssert.that(errorsWithMsg)

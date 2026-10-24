@@ -56,6 +56,17 @@ class RowJsonValueExtractors {
             + "\" is out of range for the type of the field defined in the row schema.");
   }
 
+  static Byte extractByte(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT
+        && parser.getNumberType() == NumberType.INT) {
+      int value = parser.getIntValue();
+      if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
+        return (byte) value;
+      }
+    }
+    throw outOfRangeException(parser);
+  }
+
   /**
    * Extracts byte value from JsonNode if it is within bounds.
    *
@@ -70,18 +81,19 @@ class RowJsonValueExtractors {
                     && jsonNode.canConvertToInt()
                     && jsonNode.intValue() >= Byte.MIN_VALUE
                     && jsonNode.intValue() <= Byte.MAX_VALUE)
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT
-                  && parser.getNumberType() == NumberType.INT) {
-                int value = parser.getIntValue();
-                if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
-                  return (byte) value;
-                }
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractByte)
         .build();
+  }
+
+  static Short extractShort(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT
+        && parser.getNumberType() == NumberType.INT) {
+      int value = parser.getIntValue();
+      if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
+        return (short) value;
+      }
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -98,18 +110,16 @@ class RowJsonValueExtractors {
                     && jsonNode.canConvertToInt()
                     && jsonNode.intValue() >= Short.MIN_VALUE
                     && jsonNode.intValue() <= Short.MAX_VALUE)
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT
-                  && parser.getNumberType() == NumberType.INT) {
-                int value = parser.getIntValue();
-                if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
-                  return (short) value;
-                }
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractShort)
         .build();
+  }
+
+  static Integer extractInt(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT
+        && parser.getNumberType() == NumberType.INT) {
+      return parser.getIntValue();
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -121,15 +131,18 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<Integer>builder()
         .setExtractor(JsonNode::intValue)
         .setValidator(jsonNode -> jsonNode.isIntegralNumber() && jsonNode.canConvertToInt())
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT
-                  && parser.getNumberType() == NumberType.INT) {
-                return parser.getIntValue();
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractInt)
         .build();
+  }
+
+  static Long extractLong(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT) {
+      NumberType numberType = parser.getNumberType();
+      if (numberType == NumberType.INT || numberType == NumberType.LONG) {
+        return parser.getLongValue();
+      }
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -141,17 +154,26 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<Long>builder()
         .setExtractor(JsonNode::longValue)
         .setValidator(jsonNode -> jsonNode.isIntegralNumber() && jsonNode.canConvertToLong())
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_NUMBER_INT) {
-                NumberType numberType = parser.getNumberType();
-                if (numberType == NumberType.INT || numberType == NumberType.LONG) {
-                  return parser.getLongValue();
-                }
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractLong)
         .build();
+  }
+
+  static Float extractFloat(JsonParser parser) throws IOException {
+    JsonToken token = parser.currentToken();
+    if (token == JsonToken.VALUE_NUMBER_FLOAT) {
+      double d = parser.getDoubleValue();
+      float f = (float) d;
+      if (d == (double) f) {
+        return f;
+      }
+    } else if (token == JsonToken.VALUE_NUMBER_INT && parser.getNumberType() == NumberType.INT) {
+      int i = parser.getIntValue();
+      float f = (float) i;
+      if ((double) f == (double) i) {
+        return f;
+      }
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -178,26 +200,32 @@ class RowJsonValueExtractors {
                     || (jsonNode.isIntegralNumber()
                         && jsonNode.canConvertToInt()
                         && (double) (float) jsonNode.intValue() == (double) jsonNode.intValue()))
-        .setParserExtractor(
-            parser -> {
-              JsonToken token = parser.currentToken();
-              if (token == JsonToken.VALUE_NUMBER_FLOAT) {
-                double d = parser.getDoubleValue();
-                float f = (float) d;
-                if (d == (double) f) {
-                  return f;
-                }
-              } else if (token == JsonToken.VALUE_NUMBER_INT
-                  && parser.getNumberType() == NumberType.INT) {
-                int i = parser.getIntValue();
-                float f = (float) i;
-                if ((double) f == (double) i) {
-                  return f;
-                }
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractFloat)
         .build();
+  }
+
+  static Double extractDouble(JsonParser parser) throws IOException {
+    JsonToken token = parser.currentToken();
+    if (token == JsonToken.VALUE_NUMBER_FLOAT) {
+      double d = parser.getDoubleValue();
+      if (!Double.isInfinite(d)
+          && !Double.isNaN(d)
+          && parser.getDecimalValue().compareTo(BigDecimal.valueOf(d)) == 0) {
+        return d;
+      }
+    } else if (token == JsonToken.VALUE_NUMBER_INT) {
+      NumberType numberType = parser.getNumberType();
+      if (numberType == NumberType.INT) {
+        return (double) parser.getIntValue();
+      } else if (numberType == NumberType.LONG) {
+        long l = parser.getLongValue();
+        double d = (double) l;
+        if (l != Long.MAX_VALUE && (long) d == l) {
+          return d;
+        }
+      }
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -228,31 +256,18 @@ class RowJsonValueExtractors {
                                 .decimalValue()
                                 .compareTo(BigDecimal.valueOf(jsonNode.doubleValue()))
                             == 0))
-        .setParserExtractor(
-            parser -> {
-              JsonToken token = parser.currentToken();
-              if (token == JsonToken.VALUE_NUMBER_FLOAT) {
-                double d = parser.getDoubleValue();
-                if (!Double.isInfinite(d)
-                    && !Double.isNaN(d)
-                    && parser.getDecimalValue().compareTo(BigDecimal.valueOf(d)) == 0) {
-                  return d;
-                }
-              } else if (token == JsonToken.VALUE_NUMBER_INT) {
-                NumberType numberType = parser.getNumberType();
-                if (numberType == NumberType.INT) {
-                  return (double) parser.getIntValue();
-                } else if (numberType == NumberType.LONG) {
-                  long l = parser.getLongValue();
-                  double d = (double) l;
-                  if (l != Long.MAX_VALUE && (long) d == l) {
-                    return d;
-                  }
-                }
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractDouble)
         .build();
+  }
+
+  static Boolean extractBoolean(JsonParser parser) throws IOException {
+    JsonToken token = parser.currentToken();
+    if (token == JsonToken.VALUE_TRUE) {
+      return Boolean.TRUE;
+    } else if (token == JsonToken.VALUE_FALSE) {
+      return Boolean.FALSE;
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -264,17 +279,15 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<Boolean>builder()
         .setExtractor(JsonNode::booleanValue)
         .setValidator(JsonNode::isBoolean)
-        .setParserExtractor(
-            parser -> {
-              JsonToken token = parser.currentToken();
-              if (token == JsonToken.VALUE_TRUE) {
-                return Boolean.TRUE;
-              } else if (token == JsonToken.VALUE_FALSE) {
-                return Boolean.FALSE;
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractBoolean)
         .build();
+  }
+
+  static String extractString(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_STRING) {
+      return parser.getText();
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -286,14 +299,16 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<String>builder()
         .setExtractor(JsonNode::textValue)
         .setValidator(JsonNode::isTextual)
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_STRING) {
-                return parser.getText();
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractString)
         .build();
+  }
+
+  static BigDecimal extractDecimal(JsonParser parser) throws IOException {
+    JsonToken token = parser.currentToken();
+    if (token == JsonToken.VALUE_NUMBER_INT || token == JsonToken.VALUE_NUMBER_FLOAT) {
+      return parser.getDecimalValue();
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -305,15 +320,19 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<BigDecimal>builder()
         .setExtractor(JsonNode::decimalValue)
         .setValidator(jsonNode -> jsonNode.isNumber())
-        .setParserExtractor(
-            parser -> {
-              JsonToken token = parser.currentToken();
-              if (token == JsonToken.VALUE_NUMBER_INT || token == JsonToken.VALUE_NUMBER_FLOAT) {
-                return parser.getDecimalValue();
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractDecimal)
         .build();
+  }
+
+  static DateTime extractDatetime(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_STRING) {
+      String text = parser.getText();
+      if (text.indexOf(' ') >= 0) {
+        text = text.replace(' ', 'T');
+      }
+      return DateTime.parse(text);
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -332,18 +351,15 @@ class RowJsonValueExtractors {
               return DateTime.parse(text);
             })
         .setValidator(JsonNode::isTextual)
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_STRING) {
-                String text = parser.getText();
-                if (text.indexOf(' ') >= 0) {
-                  text = text.replace(' ', 'T');
-                }
-                return DateTime.parse(text);
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractDatetime)
         .build();
+  }
+
+  static LocalDate extractDate(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_STRING) {
+      return LocalDate.parse(parser.getText());
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -355,14 +371,15 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<LocalDate>builder()
         .setExtractor(jsonNode -> LocalDate.parse(jsonNode.textValue()))
         .setValidator(JsonNode::isTextual)
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_STRING) {
-                return LocalDate.parse(parser.getText());
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractDate)
         .build();
+  }
+
+  static LocalTime extractTime(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_STRING) {
+      return LocalTime.parse(parser.getText());
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -374,14 +391,15 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<LocalTime>builder()
         .setExtractor(jsonNode -> LocalTime.parse(jsonNode.textValue()))
         .setValidator(JsonNode::isTextual)
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_STRING) {
-                return LocalTime.parse(parser.getText());
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractTime)
         .build();
+  }
+
+  static LocalDateTime extractLocalDatetime(JsonParser parser) throws IOException {
+    if (parser.currentToken() == JsonToken.VALUE_STRING) {
+      return LocalDateTime.parse(parser.getText());
+    }
+    throw outOfRangeException(parser);
   }
 
   /**
@@ -393,13 +411,7 @@ class RowJsonValueExtractors {
     return ValidatingValueExtractor.<LocalDateTime>builder()
         .setExtractor(jsonNode -> LocalDateTime.parse(jsonNode.textValue()))
         .setValidator(JsonNode::isTextual)
-        .setParserExtractor(
-            parser -> {
-              if (parser.currentToken() == JsonToken.VALUE_STRING) {
-                return LocalDateTime.parse(parser.getText());
-              }
-              throw outOfRangeException(parser);
-            })
+        .setParserExtractor(RowJsonValueExtractors::extractLocalDatetime)
         .build();
   }
 

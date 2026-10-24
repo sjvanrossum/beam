@@ -111,6 +111,19 @@ public class Schema implements Serializable {
 
   private final Options options;
 
+  // Cached RowGenerator.RowFactory for this Schema instance.
+  private transient @Nullable Object rowFactory;
+
+  @org.apache.beam.sdk.annotations.Internal
+  public @Nullable Object getRowFactory() {
+    return rowFactory;
+  }
+
+  @org.apache.beam.sdk.annotations.Internal
+  public void setRowFactory(Object rowFactory) {
+    this.rowFactory = rowFactory;
+  }
+
   /** Builder class for building {@link Schema} objects. */
   public static class Builder {
     List<Field> fields;

@@ -20,11 +20,13 @@ package org.apache.beam.sdk.coders;
 import static org.apache.beam.sdk.util.ByteBuddyUtils.getClassLoadingStrategy;
 import static org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions.checkState;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Map;
@@ -32,6 +34,7 @@ import java.util.UUID;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.modifier.FieldManifestation;
 import net.bytebuddy.description.modifier.Ownership;
 import net.bytebuddy.description.modifier.Visibility;
@@ -49,19 +52,28 @@ import net.bytebuddy.implementation.bytecode.member.FieldAccess;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
+import net.bytebuddy.jar.asm.ClassWriter;
+import net.bytebuddy.jar.asm.Label;
+import net.bytebuddy.jar.asm.MethodVisitor;
+import net.bytebuddy.jar.asm.Opcodes;
+import net.bytebuddy.jar.asm.Type;
 import net.bytebuddy.matcher.ElementMatchers;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.Schema.Field;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
+import org.apache.beam.sdk.schemas.Schema.TypeName;
 import org.apache.beam.sdk.schemas.SchemaCoder;
 import org.apache.beam.sdk.util.StringUtils;
 import org.apache.beam.sdk.util.VarInt;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
 import org.apache.beam.sdk.values.Row;
+import org.apache.beam.sdk.values.RowGenerator;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.annotations.VisibleForTesting;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Maps;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.io.ByteStreams;
+import org.joda.time.Instant;
+import org.joda.time.ReadableInstant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,35 +83,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>When {@link RowCoderGenerator#generate(Schema)} is called, a new subclass of {@literal
  * Coder<Row>} is generated for the specified schema. This class is generated using low-level
- * bytecode generation, and hardcodes encodings for all fields of the Schema. Empirically, this is
- * 30-40% faster than a coder that introspects the schema.
- *
- * <p>The generated class corresponds to the following Java class:
- *
- * <pre><code>
- * class SchemaRowCoder extends{@literal Coder<Row>} {
- *   // Generated array containing a coder for each field in the Schema.
- *   private static final Coder[] FIELD_CODERS;
- *
- *   // Generated method to return the schema this class corresponds to. Used during code
- *   // generation.
- *   private static getSchema() {
- *     return schema;
- *   }
- *
- *  {@literal @}Override
- *   public void encode(T value, OutputStream outStream) {
- *     // Delegate to a method that evaluates each coder in the static array.
- *     encodeDelegate(FIELD_CODERS, value, outStream);
- *   }
- *
- *  {@literal @}Override
- *   public abstract T decode(InputStream inStream) {
- *     // Delegate to a method that evaluates each coder in the static array.
- *     return decodeDelegate(FIELD_CODERS, inStream);
- *   }
- * }
- * </code></pre>
+ * bytecode generation, and hardcodes encodings for all fields of the Schema.
  */
 @SuppressWarnings({
   "nullness", // TODO(https://github.com/apache/beam/issues/20497)
@@ -108,10 +92,25 @@ import org.slf4j.LoggerFactory;
 public abstract class RowCoderGenerator {
   private static final ByteBuddy BYTE_BUDDY = new ByteBuddy();
   private static final BitSetCoder NULL_LIST_CODER = BitSetCoder.of();
+  private static final StringUtf8Coder STRING_CODER = StringUtf8Coder.of();
+  private static final ByteArrayCoder BYTE_ARRAY_CODER = ByteArrayCoder.of();
+  private static final BigDecimalCoder BIG_DECIMAL_CODER = BigDecimalCoder.of();
 
   private static final String CODERS_FIELD_NAME = "FIELD_CODERS";
   private static final String POSITIONS_FIELD_NAME = "FIELD_ENCODING_POSITIONS";
   private static final String SCHEMA_OPTION_STATIC_ENCODING = "beam:option:row:static_encoding";
+
+  private static final String INTERNAL_GENERATOR_NAME = Type.getInternalName(RowCoderGenerator.class);
+  private static final String INTERNAL_ROW_NAME = Type.getInternalName(Row.class);
+  private static final String INTERNAL_CODER_NAME = Type.getInternalName(Coder.class);
+  private static final String INTERNAL_VARINT_NAME = Type.getInternalName(VarInt.class);
+  private static final String SCHEMA_DESC = Type.getDescriptor(Schema.class);
+  private static final String CODER_ARRAY_DESC = Type.getDescriptor(Coder[].class);
+  private static final String INT_ARRAY_DESC = Type.getDescriptor(int[].class);
+  private static final String OUTPUT_STREAM_DESC = Type.getDescriptor(OutputStream.class);
+  private static final String INPUT_STREAM_DESC = Type.getDescriptor(InputStream.class);
+  private static final String ROW_DESC = Type.getDescriptor(Row.class);
+  private static final String OBJECT_DESC = Type.getDescriptor(Object.class);
 
   static class WithStackTrace<T> {
     private final T value;
@@ -205,11 +204,6 @@ public abstract class RowCoderGenerator {
       if (existingRowCoder != null) {
         return existingRowCoder.getValue();
       }
-      TypeDescription.Generic coderType =
-          TypeDescription.Generic.Builder.parameterizedType(Coder.class, Row.class).build();
-      DynamicType.Builder<Coder> builder =
-          (DynamicType.Builder<Coder>) BYTE_BUDDY.subclass(coderType);
-      builder = implementMethods(schema, builder);
 
       int[] encodingPosToRowIndex = new int[schema.getFieldCount()];
       @Nullable
@@ -239,6 +233,10 @@ public abstract class RowCoderGenerator {
             SchemaCoder.coderForFieldType(schema.getField(rowIndex).getType().withNullable(false));
       }
 
+      TypeDescription.Generic coderType =
+          TypeDescription.Generic.Builder.parameterizedType(Coder.class, Row.class).build();
+      DynamicType.Builder<Coder> builder =
+          (DynamicType.Builder<Coder>) BYTE_BUDDY.subclass(coderType);
       builder =
           builder
               .defineField(
@@ -248,11 +246,15 @@ public abstract class RowCoderGenerator {
               .defineConstructor(Modifier.PUBLIC)
               .withParameters(Coder[].class, int[].class)
               .intercept(new GeneratedCoderConstructor());
+      builder = implementMethods(schema, encodingPosToRowIndex, builder);
 
       Coder<Row> rowCoder;
       try {
         rowCoder =
             builder
+                .visit(
+                    new AsmVisitorWrapper.ForDeclaredMethods()
+                        .writerFlags(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS))
                 .make()
                 .load(
                     ReflectHelpers.findClassLoader(Coder.class.getClassLoader()),
@@ -325,30 +327,223 @@ public abstract class RowCoderGenerator {
   }
 
   private static DynamicType.Builder<Coder> implementMethods(
-      Schema schema, DynamicType.Builder<Coder> builder) {
+      Schema schema, int[] encodingPosToRowIndex, DynamicType.Builder<Coder> builder) {
     boolean hasNullableFields =
         schema.getFields().stream().map(Field::getType).anyMatch(FieldType::getNullable);
     boolean staticEncoding =
         schema.getOptions().getValueOrDefault(SCHEMA_OPTION_STATIC_ENCODING, false);
+    boolean useUnrolledGeneratedRow = RowGenerator.isSupported(schema);
+    @Nullable
+    Class<? extends Row> generatedRowClass =
+        useUnrolledGeneratedRow ? RowGenerator.getFactory(schema).rowClass() : null;
+
     return builder
         .defineMethod("getSchema", Schema.class, Visibility.PRIVATE, Ownership.STATIC)
         .intercept(FixedValue.reference(schema))
         .defineMethod("hasNullableFields", boolean.class, Visibility.PRIVATE, Ownership.STATIC)
         .intercept(FixedValue.reference(hasNullableFields))
         .method(ElementMatchers.named("encode"))
-        .intercept(new EncodeInstruction(hasNullableFields, staticEncoding))
+        .intercept(
+            new EncodeInstruction(
+                schema,
+                encodingPosToRowIndex,
+                hasNullableFields,
+                staticEncoding,
+                generatedRowClass))
         .method(ElementMatchers.named("decode"))
-        .intercept(new DecodeInstruction(staticEncoding));
+        .intercept(
+            new DecodeInstruction(
+                schema,
+                encodingPosToRowIndex,
+                hasNullableFields,
+                staticEncoding,
+                generatedRowClass));
+  }
+
+  // Static primitive/built-in coder helpers called directly by unrolled generated bytecode.
+
+  public static void writeByte(byte v, OutputStream out) throws IOException {
+    out.write(v);
+  }
+
+  public static byte readByte(InputStream in) throws IOException {
+    int b = in.read();
+    if (b == -1) {
+      throw new CoderException(new EOFException("EOF encountered decoding 1 byte from input stream"));
+    }
+    return (byte) b;
+  }
+
+  public static void writeShort(short v, OutputStream out) throws IOException {
+    BitConverters.writeBigEndianShort(v, out);
+  }
+
+  public static short readShort(InputStream in) throws IOException {
+    try {
+      return BitConverters.readBigEndianShort(in);
+    } catch (EOFException e) {
+      throw new CoderException(e);
+    }
+  }
+
+  public static void writeFloat(float v, OutputStream out) throws IOException {
+    BitConverters.writeBigEndianInt(Float.floatToIntBits(v), out);
+  }
+
+  public static float readFloat(InputStream in) throws IOException {
+    try {
+      return Float.intBitsToFloat(BitConverters.readBigEndianInt(in));
+    } catch (EOFException e) {
+      throw new CoderException(e);
+    }
+  }
+
+  public static void writeDouble(double v, OutputStream out) throws IOException {
+    long bits = Double.doubleToLongBits(v);
+    BitConverters.writeBigEndianInt((int) (bits >>> 32), out);
+    BitConverters.writeBigEndianInt((int) bits, out);
+  }
+
+  public static double readDouble(InputStream in) throws IOException {
+    try {
+      long hi = BitConverters.readBigEndianInt(in) & 0xFFFFFFFFL;
+      long lo = BitConverters.readBigEndianInt(in) & 0xFFFFFFFFL;
+      return Double.longBitsToDouble((hi << 32) | lo);
+    } catch (EOFException e) {
+      throw new CoderException(e);
+    }
+  }
+
+  public static void writeBoolean(boolean v, OutputStream out) throws IOException {
+    out.write(v ? 1 : 0);
+  }
+
+  public static boolean readBoolean(InputStream in) throws IOException {
+    int b = in.read();
+    if (b == 0) {
+      return false;
+    } else if (b == 1) {
+      return true;
+    } else if (b == -1) {
+      throw new CoderException(new EOFException("EOF encountered decoding 1 byte from input stream"));
+    }
+    throw new IOException(String.format("Expected 0 or 1, got %d", (byte) b));
+  }
+
+  public static void writeString(String v, OutputStream out) throws IOException {
+    STRING_CODER.encode(v, out);
+  }
+
+  public static String readString(InputStream in) throws IOException {
+    return STRING_CODER.decode(in);
+  }
+
+  public static void writeBytes(byte[] v, OutputStream out) throws IOException {
+    BYTE_ARRAY_CODER.encode(v, out);
+  }
+
+  public static byte[] readBytes(InputStream in) throws IOException {
+    return BYTE_ARRAY_CODER.decode(in);
+  }
+
+  public static void writeDecimal(BigDecimal v, OutputStream out) throws IOException {
+    BIG_DECIMAL_CODER.encode(v, out);
+  }
+
+  public static BigDecimal readDecimal(InputStream in) throws IOException {
+    return BIG_DECIMAL_CODER.decode(in);
+  }
+
+  public static void writeDateTime(ReadableInstant v, OutputStream out) throws IOException {
+    long shiftedMillis = v.getMillis() - Long.MIN_VALUE;
+    BitConverters.writeBigEndianInt((int) (shiftedMillis >>> 32), out);
+    BitConverters.writeBigEndianInt((int) shiftedMillis, out);
+  }
+
+  public static ReadableInstant readDateTime(InputStream in) throws IOException {
+    try {
+      long hi = BitConverters.readBigEndianInt(in) & 0xFFFFFFFFL;
+      long lo = BitConverters.readBigEndianInt(in) & 0xFFFFFFFFL;
+      long shiftedMillis = (hi << 32) | lo;
+      return new Instant(shiftedMillis + Long.MIN_VALUE);
+    } catch (EOFException e) {
+      throw new CoderException(e);
+    }
+  }
+
+  public static void writeNullMask(long nullMask, OutputStream out) throws IOException {
+    if (nullMask == 0L) {
+      out.write(0);
+    } else {
+      int numBytes = (64 - Long.numberOfLeadingZeros(nullMask) + 7) >>> 3;
+      out.write(numBytes);
+      for (long x = nullMask; x != 0; x >>>= 8) {
+        out.write((int) (x & 0xFF));
+      }
+    }
+  }
+
+  public static long readNullMask(InputStream inputStream, int nullBytesLength) throws IOException {
+    if (nullBytesLength == 0) {
+      return 0L;
+    }
+    if (nullBytesLength <= 8) {
+      long nullMask = 0L;
+      for (int i = 0; i < nullBytesLength; ++i) {
+        int b = inputStream.read();
+        if (b < 0) {
+          throw new EOFException();
+        }
+        nullMask |= (b & 0xFFL) << (i << 3);
+      }
+      return nullMask;
+    }
+    byte[] bytes = new byte[nullBytesLength];
+    ByteStreams.readFully(inputStream, bytes);
+    long nullMask = 0L;
+    for (int i = 0; i < 8; ++i) {
+      nullMask |= (bytes[i] & 0xFFL) << (i << 3);
+    }
+    return nullMask;
+  }
+
+  static boolean isIdentityPermutation(int[] encodingPosToRowIndex) {
+    for (int i = 0; i < encodingPosToRowIndex.length; i++) {
+      if (encodingPosToRowIndex[i] != i) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static void pushInt(MethodVisitor mv, int value) {
+    if (value >= -1 && value <= 5) {
+      mv.visitInsn(Opcodes.ICONST_0 + value);
+    } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
+      mv.visitIntInsn(Opcodes.BIPUSH, value);
+    } else {
+      mv.visitIntInsn(Opcodes.SIPUSH, value);
+    }
   }
 
   private static class EncodeInstruction implements Implementation {
-    static final ForLoadedType LOADED_TYPE = new ForLoadedType(EncodeInstruction.class);
+    private final Schema schema;
+    private final int[] encodingPosToRowIndex;
     private final boolean hasNullableFields;
     private final boolean staticEncoding;
+    private final @Nullable Class<? extends Row> generatedRowClass;
 
-    EncodeInstruction(boolean hasNullableFields, boolean staticEncoding) {
+    EncodeInstruction(
+        Schema schema,
+        int[] encodingPosToRowIndex,
+        boolean hasNullableFields,
+        boolean staticEncoding,
+        @Nullable Class<? extends Row> generatedRowClass) {
+      this.schema = schema;
+      this.encodingPosToRowIndex = encodingPosToRowIndex;
       this.hasNullableFields = hasNullableFields;
       this.staticEncoding = staticEncoding;
+      this.generatedRowClass = generatedRowClass;
     }
 
     @Override
@@ -357,42 +552,283 @@ public abstract class RowCoderGenerator {
           staticEncoding
               ? "encodeStatic"
               : (hasNullableFields ? "encodeNullable" : "encodeNonNullable");
-      return (methodVisitor, implementationContext, instrumentedMethod) -> {
-        StackManipulation manipulation =
-            new StackManipulation.Compound(
-                // Array of coders.
-                MethodVariableAccess.loadThis(),
-                FieldAccess.forField(
-                        implementationContext
-                            .getInstrumentedType()
-                            .getDeclaredFields()
-                            .filter(ElementMatchers.named(CODERS_FIELD_NAME))
-                            .getOnly())
-                    .read(),
-                MethodVariableAccess.loadThis(),
-                FieldAccess.forField(
-                        implementationContext
-                            .getInstrumentedType()
-                            .getDeclaredFields()
-                            .filter(ElementMatchers.named(POSITIONS_FIELD_NAME))
-                            .getOnly())
-                    .read(),
-                // Element to encode. (offset 1, as offset 0 is always "this").
-                MethodVariableAccess.REFERENCE.loadFrom(1),
-                // OutputStream.
-                MethodVariableAccess.REFERENCE.loadFrom(2),
-                // Call EncodeInstruction delegate
-                MethodInvocation.invoke(
-                    LOADED_TYPE
-                        .getDeclaredMethods()
-                        .filter(
-                            ElementMatchers.isStatic()
-                                .and(ElementMatchers.named(delegateMethodName)))
-                        .getOnly()),
-                MethodReturn.VOID);
-        StackManipulation.Size size = manipulation.apply(methodVisitor, implementationContext);
-        return new ByteCodeAppender.Size(size.getMaximalSize(), instrumentedMethod.getStackSize());
+      String coderOwner = implementationTarget.getInstrumentedType().getInternalName();
+
+      return (mv, implementationContext, instrumentedMethod) -> {
+        // Note: Coder.encode has two bridges/methods in bytecode:
+        // encode(Object, OutputStream) and/or encode(Row, OutputStream).
+        if (generatedRowClass != null) {
+          String rowInternal = Type.getInternalName(generatedRowClass);
+          Label fallbackLabel = new Label();
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitTypeInsn(Opcodes.INSTANCEOF, rowInternal);
+          mv.visitJumpInsn(Opcodes.IFEQ, fallbackLabel);
+
+          emitUnrolledEncode(mv, coderOwner, rowInternal);
+          mv.visitInsn(Opcodes.RETURN);
+
+          mv.visitLabel(fallbackLabel);
+        }
+
+        // Fallback to static delegate for RowWithGetters or >64 fields
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, POSITIONS_FIELD_NAME, INT_ARRAY_DESC);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitTypeInsn(Opcodes.CHECKCAST, INTERNAL_ROW_NAME);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            Type.getInternalName(EncodeInstruction.class),
+            delegateMethodName,
+            "(" + CODER_ARRAY_DESC + INT_ARRAY_DESC + ROW_DESC + OUTPUT_STREAM_DESC + ")V",
+            false);
+        mv.visitInsn(Opcodes.RETURN);
+        return new ByteCodeAppender.Size(8, 6);
       };
+    }
+
+    private void emitUnrolledEncode(MethodVisitor mv, String coderOwner, String rowInternal) {
+      int fieldCount = schema.getFieldCount();
+      // Local 3: typedRow
+      mv.visitVarInsn(Opcodes.ALOAD, 1);
+      mv.visitTypeInsn(Opcodes.CHECKCAST, rowInternal);
+      mv.visitVarInsn(Opcodes.ASTORE, 3);
+
+      // Local 4..5: long rowNullMask = typedRow.nullMask;
+      mv.visitVarInsn(Opcodes.ALOAD, 3);
+      mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, "nullMask", "J");
+      mv.visitVarInsn(Opcodes.LSTORE, 4);
+
+      if (!staticEncoding) {
+        // VarInt.encode(fieldCount, outStream);
+        pushInt(mv, fieldCount);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            INTERNAL_VARINT_NAME,
+            "encode",
+            "(I" + OUTPUT_STREAM_DESC + ")V",
+            false);
+
+        if (!hasNullableFields) {
+          // outStream.write(0);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitInsn(Opcodes.ICONST_0);
+          mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/OutputStream", "write", "(I)V", false);
+        } else if (isIdentityPermutation(encodingPosToRowIndex)) {
+          // writeNullMask(rowNullMask, outStream);
+          mv.visitVarInsn(Opcodes.LLOAD, 4);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeNullMask",
+              "(J" + OUTPUT_STREAM_DESC + ")V",
+              false);
+        } else {
+          // Permute rowNullMask into wireMask according to encodingPosToRowIndex
+          mv.visitInsn(Opcodes.LCONST_0);
+          for (int encPos = 0; encPos < fieldCount; encPos++) {
+            int rowIdx = encodingPosToRowIndex[encPos];
+            if (schema.getField(rowIdx).getType().getNullable()) {
+              Label notNull = new Label();
+              mv.visitVarInsn(Opcodes.LLOAD, 4);
+              mv.visitLdcInsn(1L << rowIdx);
+              mv.visitInsn(Opcodes.LAND);
+              mv.visitInsn(Opcodes.LCONST_0);
+              mv.visitInsn(Opcodes.LCMP);
+              mv.visitJumpInsn(Opcodes.IFEQ, notNull);
+              mv.visitLdcInsn(1L << encPos);
+              mv.visitInsn(Opcodes.LOR);
+              mv.visitLabel(notNull);
+            }
+          }
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeNullMask",
+              "(J" + OUTPUT_STREAM_DESC + ")V",
+              false);
+        }
+      }
+
+      // Unrolled per-field encoding in wire encodingPosition order
+      for (int encPos = 0; encPos < fieldCount; encPos++) {
+        int rowIdx = encodingPosToRowIndex[encPos];
+        Field field = schema.getField(rowIdx);
+        FieldType ft = field.getType();
+        TypeName typeName = ft.getTypeName();
+        String fieldName = "f" + rowIdx;
+        String fieldDesc = getFieldDescriptor(typeName);
+
+        Label skipField = new Label();
+        if (ft.getNullable()) {
+          mv.visitVarInsn(Opcodes.LLOAD, 4);
+          mv.visitLdcInsn(1L << rowIdx);
+          mv.visitInsn(Opcodes.LAND);
+          mv.visitInsn(Opcodes.LCONST_0);
+          mv.visitInsn(Opcodes.LCMP);
+          mv.visitJumpInsn(Opcodes.IFNE, skipField);
+        }
+
+        emitEncodeSingleField(mv, coderOwner, rowInternal, encPos, fieldName, fieldDesc, typeName);
+
+        if (ft.getNullable()) {
+          mv.visitLabel(skipField);
+        }
+      }
+    }
+
+    private static void emitEncodeSingleField(
+        MethodVisitor mv,
+        String coderOwner,
+        String rowInternal,
+        int encPos,
+        String fieldName,
+        String fieldDesc,
+        TypeName typeName) {
+      switch (typeName) {
+        case BYTE:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeByte",
+              "(B" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case INT16:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeShort",
+              "(S" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case INT32:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_VARINT_NAME,
+              "encode",
+              "(I" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case INT64:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_VARINT_NAME,
+              "encode",
+              "(J" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case FLOAT:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeFloat",
+              "(F" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case DOUBLE:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeDouble",
+              "(D" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case BOOLEAN:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeBoolean",
+              "(Z" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case STRING:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeString",
+              "(Ljava/lang/String;" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case BYTES:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeBytes",
+              "([B" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case DECIMAL:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeDecimal",
+              "(Ljava/math/BigDecimal;" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        case DATETIME:
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "writeDateTime",
+              "(Lorg/joda/time/ReadableInstant;" + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+        default:
+          // ROW, ARRAY, ITERABLE, MAP, LOGICAL_TYPE -> coders[encPos].encode(typedRow.f_rowIdx, out)
+          mv.visitVarInsn(Opcodes.ALOAD, 0);
+          mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
+          pushInt(mv, encPos);
+          mv.visitInsn(Opcodes.AALOAD);
+          mv.visitVarInsn(Opcodes.ALOAD, 3);
+          mv.visitFieldInsn(Opcodes.GETFIELD, rowInternal, fieldName, fieldDesc);
+          mv.visitVarInsn(Opcodes.ALOAD, 2);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL,
+              INTERNAL_CODER_NAME,
+              "encode",
+              "(" + OBJECT_DESC + OUTPUT_STREAM_DESC + ")V",
+              false);
+          break;
+      }
     }
 
     @Override
@@ -447,6 +883,26 @@ public abstract class RowCoderGenerator {
 
       // Extract the values out once so that both null scanning and encoding share them.
       Object[] fieldValues = new Object[fieldCount];
+      if (fieldCount <= 64) {
+        long nullMask = 0L;
+        for (int encodingPos = 0; encodingPos < fieldCount; ++encodingPos) {
+          @Nullable Object fieldValue = value.getValue(encodingPosToIndex[encodingPos]);
+          if (fieldValue == null) {
+            nullMask |= 1L << encodingPos;
+          } else {
+            fieldValues[encodingPos] = fieldValue;
+          }
+        }
+        writeNullMask(nullMask, outputStream);
+        for (int encodingPos = 0; encodingPos < fieldCount; ++encodingPos) {
+          @Nullable Object fieldValue = fieldValues[encodingPos];
+          if (fieldValue != null) {
+            coders[encodingPos].encode(fieldValue, outputStream);
+          }
+        }
+        return;
+      }
+
       for (int idx = 0; idx < fieldCount; ++idx) {
         fieldValues[idx] = value.getValue(idx);
       }
@@ -477,56 +933,369 @@ public abstract class RowCoderGenerator {
   }
 
   private static class DecodeInstruction implements Implementation {
-    static final ForLoadedType LOADED_TYPE = new ForLoadedType(DecodeInstruction.class);
+    private final Schema schema;
+    private final int[] encodingPosToRowIndex;
+    private final boolean hasNullableFields;
     private final boolean staticEncoding;
+    private final @Nullable Class<? extends Row> generatedRowClass;
 
-    DecodeInstruction(boolean staticEncoding) {
+    DecodeInstruction(
+        Schema schema,
+        int[] encodingPosToRowIndex,
+        boolean hasNullableFields,
+        boolean staticEncoding,
+        @Nullable Class<? extends Row> generatedRowClass) {
+      this.schema = schema;
+      this.encodingPosToRowIndex = encodingPosToRowIndex;
+      this.hasNullableFields = hasNullableFields;
       this.staticEncoding = staticEncoding;
+      this.generatedRowClass = generatedRowClass;
     }
 
     @Override
     public ByteCodeAppender appender(Target implementationTarget) {
       String delegateMethodName = staticEncoding ? "decodeStatic" : "decodeDynamic";
-      return (methodVisitor, implementationContext, instrumentedMethod) -> {
-        StackManipulation manipulation =
-            new StackManipulation.Compound(
-                // Schema. Used in generation of DecodeInstruction.
-                MethodInvocation.invoke(
-                    implementationContext
-                        .getInstrumentedType()
-                        .getDeclaredMethods()
-                        .filter(ElementMatchers.named("getSchema"))
-                        .getOnly()),
-                // Array of coders.
-                MethodVariableAccess.loadThis(),
-                FieldAccess.forField(
-                        implementationContext
-                            .getInstrumentedType()
-                            .getDeclaredFields()
-                            .filter(ElementMatchers.named(CODERS_FIELD_NAME))
-                            .getOnly())
-                    .read(),
-                MethodVariableAccess.loadThis(),
-                FieldAccess.forField(
-                        implementationContext
-                            .getInstrumentedType()
-                            .getDeclaredFields()
-                            .filter(ElementMatchers.named(POSITIONS_FIELD_NAME))
-                            .getOnly())
-                    .read(),
-                // read the InputStream. (offset 1, as offset 0 is always "this").
-                MethodVariableAccess.REFERENCE.loadFrom(1),
-                MethodInvocation.invoke(
-                    LOADED_TYPE
-                        .getDeclaredMethods()
-                        .filter(
-                            ElementMatchers.isStatic()
-                                .and(ElementMatchers.named(delegateMethodName)))
-                        .getOnly()),
-                MethodReturn.REFERENCE);
-        StackManipulation.Size size = manipulation.apply(methodVisitor, implementationContext);
-        return new ByteCodeAppender.Size(size.getMaximalSize(), instrumentedMethod.getStackSize());
+      String coderOwner = implementationTarget.getInstrumentedType().getInternalName();
+
+      return (mv, implementationContext, instrumentedMethod) -> {
+        if (generatedRowClass != null) {
+          String rowInternal = Type.getInternalName(generatedRowClass);
+          emitUnrolledDecode(mv, coderOwner, rowInternal);
+          mv.visitInsn(Opcodes.ARETURN);
+          return new ByteCodeAppender.Size(8, 8);
+        }
+
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC, coderOwner, "getSchema", "()" + SCHEMA_DESC, false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, POSITIONS_FIELD_NAME, INT_ARRAY_DESC);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            Type.getInternalName(DecodeInstruction.class),
+            delegateMethodName,
+            "(" + SCHEMA_DESC + CODER_ARRAY_DESC + INT_ARRAY_DESC + INPUT_STREAM_DESC + ")" + ROW_DESC,
+            false);
+        mv.visitInsn(Opcodes.ARETURN);
+        return new ByteCodeAppender.Size(6, 4);
       };
+    }
+
+    private void emitUnrolledDecode(MethodVisitor mv, String coderOwner, String rowInternal) {
+      int fieldCount = schema.getFieldCount();
+
+      // Local 2: GeneratedRow row = new GeneratedRow(getSchema());
+      mv.visitTypeInsn(Opcodes.NEW, rowInternal);
+      mv.visitInsn(Opcodes.DUP);
+      mv.visitMethodInsn(Opcodes.INVOKESTATIC, coderOwner, "getSchema", "()" + SCHEMA_DESC, false);
+      mv.visitMethodInsn(
+          Opcodes.INVOKESPECIAL, rowInternal, "<init>", "(" + SCHEMA_DESC + ")V", false);
+      mv.visitVarInsn(Opcodes.ASTORE, 2);
+
+      if (staticEncoding) {
+        for (int encPos = 0; encPos < fieldCount; encPos++) {
+          int rowIdx = encodingPosToRowIndex[encPos];
+          Field field = schema.getField(rowIdx);
+          TypeName typeName = field.getType().getTypeName();
+          String fieldName = "f" + rowIdx;
+          String fieldDesc = getFieldDescriptor(typeName);
+          emitDecodeSingleField(mv, coderOwner, rowInternal, encPos, fieldName, fieldDesc, typeName);
+        }
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        return;
+      }
+
+      // Dynamic encoding:
+      // Local 3: int wireFieldCount = VarInt.decodeInt(inStream);
+      mv.visitVarInsn(Opcodes.ALOAD, 1);
+      mv.visitMethodInsn(
+          Opcodes.INVOKESTATIC,
+          INTERNAL_VARINT_NAME,
+          "decodeInt",
+          "(" + INPUT_STREAM_DESC + ")I",
+          false);
+      mv.visitVarInsn(Opcodes.ISTORE, 3);
+
+      // Local 4: int nullBytesLen = VarInt.decodeInt(inStream);
+      mv.visitVarInsn(Opcodes.ALOAD, 1);
+      mv.visitMethodInsn(
+          Opcodes.INVOKESTATIC,
+          INTERNAL_VARINT_NAME,
+          "decodeInt",
+          "(" + INPUT_STREAM_DESC + ")I",
+          false);
+      mv.visitVarInsn(Opcodes.ISTORE, 4);
+
+      boolean identityOrder = isIdentityPermutation(encodingPosToRowIndex);
+      if (!hasNullableFields && identityOrder) {
+        // Fast path when schema has no nullable fields and wireFieldCount == fieldCount && nullBytesLen == 0
+        Label generalPath = new Label();
+        Label doneLabel = new Label();
+
+        mv.visitVarInsn(Opcodes.ILOAD, 3);
+        pushInt(mv, fieldCount);
+        mv.visitJumpInsn(Opcodes.IF_ICMPNE, generalPath);
+        mv.visitVarInsn(Opcodes.ILOAD, 4);
+        mv.visitJumpInsn(Opcodes.IFNE, generalPath);
+
+        for (int encPos = 0; encPos < fieldCount; encPos++) {
+          int rowIdx = encodingPosToRowIndex[encPos];
+          TypeName typeName = schema.getField(rowIdx).getType().getTypeName();
+          emitDecodeSingleField(
+              mv, coderOwner, rowInternal, encPos, "f" + rowIdx, getFieldDescriptor(typeName), typeName);
+        }
+        mv.visitJumpInsn(Opcodes.GOTO, doneLabel);
+
+        mv.visitLabel(generalPath);
+        emitGeneralDynamicDecode(mv, coderOwner, rowInternal, fieldCount, identityOrder);
+
+        mv.visitLabel(doneLabel);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        return;
+      }
+
+      emitGeneralDynamicDecode(mv, coderOwner, rowInternal, fieldCount, identityOrder);
+      mv.visitVarInsn(Opcodes.ALOAD, 2);
+    }
+
+    private void emitGeneralDynamicDecode(
+        MethodVisitor mv,
+        String coderOwner,
+        String rowInternal,
+        int fieldCount,
+        boolean identityOrder) {
+      // Local 5..6: long wireNullMask = readNullMask(inStream, nullBytesLen);
+      mv.visitVarInsn(Opcodes.ALOAD, 1);
+      mv.visitVarInsn(Opcodes.ILOAD, 4);
+      mv.visitMethodInsn(
+          Opcodes.INVOKESTATIC,
+          INTERNAL_GENERATOR_NAME,
+          "readNullMask",
+          "(" + INPUT_STREAM_DESC + "I)J",
+          false);
+      mv.visitVarInsn(Opcodes.LSTORE, 5);
+
+      if (!identityOrder) {
+        // Local 7..8: long rowNullMask = 0L;
+        mv.visitInsn(Opcodes.LCONST_0);
+        mv.visitVarInsn(Opcodes.LSTORE, 7);
+      }
+
+      for (int encPos = 0; encPos < fieldCount; encPos++) {
+        int rowIdx = encodingPosToRowIndex[encPos];
+        Field field = schema.getField(rowIdx);
+        TypeName typeName = field.getType().getTypeName();
+        String fieldName = "f" + rowIdx;
+        String fieldDesc = getFieldDescriptor(typeName);
+
+        Label isNullLabel = new Label();
+        Label endFieldLabel = new Label();
+
+        // if (encPos >= wireFieldCount) goto isNullLabel
+        pushInt(mv, encPos);
+        mv.visitVarInsn(Opcodes.ILOAD, 3);
+        mv.visitJumpInsn(Opcodes.IF_ICMPGE, isNullLabel);
+
+        // if ((wireNullMask & (1L << encPos)) != 0) goto isNullLabel
+        mv.visitVarInsn(Opcodes.LLOAD, 5);
+        mv.visitLdcInsn(1L << encPos);
+        mv.visitInsn(Opcodes.LAND);
+        mv.visitInsn(Opcodes.LCONST_0);
+        mv.visitInsn(Opcodes.LCMP);
+        mv.visitJumpInsn(Opcodes.IFNE, isNullLabel);
+
+        emitDecodeSingleField(mv, coderOwner, rowInternal, encPos, fieldName, fieldDesc, typeName);
+        if (!identityOrder) {
+          mv.visitJumpInsn(Opcodes.GOTO, endFieldLabel);
+        }
+
+        mv.visitLabel(isNullLabel);
+        if (!identityOrder) {
+          mv.visitVarInsn(Opcodes.LLOAD, 7);
+          mv.visitLdcInsn(1L << rowIdx);
+          mv.visitInsn(Opcodes.LOR);
+          mv.visitVarInsn(Opcodes.LSTORE, 7);
+          mv.visitLabel(endFieldLabel);
+        }
+      }
+
+      if (identityOrder) {
+        long allFieldsMask = fieldCount == 64 ? -1L : (1L << fieldCount) - 1L;
+        // If wireFieldCount < fieldCount, mark trailing fields [wireFieldCount .. fieldCount-1] as null
+        Label maskReady = new Label();
+        mv.visitVarInsn(Opcodes.ILOAD, 3);
+        pushInt(mv, fieldCount);
+        mv.visitJumpInsn(Opcodes.IF_ICMPGE, maskReady);
+
+        // wireNullMask |= (-1L << wireFieldCount)
+        mv.visitVarInsn(Opcodes.LLOAD, 5);
+        mv.visitLdcInsn(-1L);
+        mv.visitVarInsn(Opcodes.ILOAD, 3);
+        mv.visitInsn(Opcodes.LSHL);
+        mv.visitInsn(Opcodes.LOR);
+        mv.visitVarInsn(Opcodes.LSTORE, 5);
+
+        mv.visitLabel(maskReady);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitVarInsn(Opcodes.LLOAD, 5);
+        if (fieldCount < 64) {
+          mv.visitLdcInsn(allFieldsMask);
+          mv.visitInsn(Opcodes.LAND);
+        }
+        mv.visitFieldInsn(Opcodes.PUTFIELD, rowInternal, "nullMask", "J");
+      } else {
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitVarInsn(Opcodes.LLOAD, 7);
+        mv.visitFieldInsn(Opcodes.PUTFIELD, rowInternal, "nullMask", "J");
+      }
+    }
+
+    private static void emitDecodeSingleField(
+        MethodVisitor mv,
+        String coderOwner,
+        String rowInternal,
+        int encPos,
+        String fieldName,
+        String fieldDesc,
+        TypeName typeName) {
+      mv.visitVarInsn(Opcodes.ALOAD, 2);
+      switch (typeName) {
+        case BYTE:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readByte",
+              "(" + INPUT_STREAM_DESC + ")B",
+              false);
+          break;
+        case INT16:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readShort",
+              "(" + INPUT_STREAM_DESC + ")S",
+              false);
+          break;
+        case INT32:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_VARINT_NAME,
+              "decodeInt",
+              "(" + INPUT_STREAM_DESC + ")I",
+              false);
+          break;
+        case INT64:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_VARINT_NAME,
+              "decodeLong",
+              "(" + INPUT_STREAM_DESC + ")J",
+              false);
+          break;
+        case FLOAT:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readFloat",
+              "(" + INPUT_STREAM_DESC + ")F",
+              false);
+          break;
+        case DOUBLE:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readDouble",
+              "(" + INPUT_STREAM_DESC + ")D",
+              false);
+          break;
+        case BOOLEAN:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readBoolean",
+              "(" + INPUT_STREAM_DESC + ")Z",
+              false);
+          break;
+        case STRING:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readString",
+              "(" + INPUT_STREAM_DESC + ")Ljava/lang/String;",
+              false);
+          break;
+        case BYTES:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readBytes",
+              "(" + INPUT_STREAM_DESC + ")[B",
+              false);
+          break;
+        case DECIMAL:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readDecimal",
+              "(" + INPUT_STREAM_DESC + ")Ljava/math/BigDecimal;",
+              false);
+          break;
+        case DATETIME:
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKESTATIC,
+              INTERNAL_GENERATOR_NAME,
+              "readDateTime",
+              "(" + INPUT_STREAM_DESC + ")Lorg/joda/time/ReadableInstant;",
+              false);
+          break;
+        default:
+          mv.visitVarInsn(Opcodes.ALOAD, 0);
+          mv.visitFieldInsn(Opcodes.GETFIELD, coderOwner, CODERS_FIELD_NAME, CODER_ARRAY_DESC);
+          pushInt(mv, encPos);
+          mv.visitInsn(Opcodes.AALOAD);
+          mv.visitVarInsn(Opcodes.ALOAD, 1);
+          mv.visitMethodInsn(
+              Opcodes.INVOKEVIRTUAL,
+              INTERNAL_CODER_NAME,
+              "decode",
+              "(" + INPUT_STREAM_DESC + ")" + OBJECT_DESC,
+              false);
+          castReferenceField(mv, typeName);
+          break;
+      }
+      mv.visitFieldInsn(Opcodes.PUTFIELD, rowInternal, fieldName, fieldDesc);
+    }
+
+    private static void castReferenceField(MethodVisitor mv, TypeName typeName) {
+      switch (typeName) {
+        case ROW:
+          mv.visitTypeInsn(Opcodes.CHECKCAST, INTERNAL_ROW_NAME);
+          break;
+        case ARRAY:
+          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Collection");
+          break;
+        case ITERABLE:
+          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/lang/Iterable");
+          break;
+        case MAP:
+          mv.visitTypeInsn(Opcodes.CHECKCAST, "java/util/Map");
+          break;
+        default:
+          break;
+      }
     }
 
     @Override
@@ -552,9 +1321,6 @@ public abstract class RowCoderGenerator {
       int fieldCount = VarInt.decodeInt(inputStream);
       int nullBytesLength = VarInt.decodeInt(inputStream);
       Object[] fieldValues = new Object[coders.length];
-      // In the case of a schema change going backwards, fieldCount might be > coders.length,
-      // in which case we drop the extra fields. If the schema was evolved to contain more fields,
-      // the remaining elements of fieldValues are already null.
       int limit = Math.min(fieldCount, coders.length);
       if (nullBytesLength == 0) {
         for (int encodingPos = 0; encodingPos < limit; ++encodingPos) {
@@ -571,25 +1337,7 @@ public abstract class RowCoderGenerator {
         decodeWithBitSet(
             coders, encodingPosToIndex, inputStream, fieldValues, limit, nullBytesLength);
       }
-      // We call attachValues instead of setValues. setValues validates every element in the list
-      // is of the proper type, potentially converts to the internal type Row stores, and copies
-      // all values. Since we assume that decode is always being called on a previously-encoded
-      // Row, the values should already be validated and of the correct type. So, we can save
-      // some processing by simply transferring ownership of the list to the Row.
       return Row.withSchema(schema).attachValues(fieldValues);
-    }
-
-    private static long readNullMask(InputStream inputStream, int nullBytesLength)
-        throws IOException {
-      long nullMask = 0L;
-      for (int i = 0; i < nullBytesLength; ++i) {
-        int b = inputStream.read();
-        if (b < 0) {
-          throw new java.io.EOFException();
-        }
-        nullMask |= (b & 0xFFL) << (i << 3);
-      }
-      return nullMask;
     }
 
     private static void decodeWithBitSet(
@@ -608,6 +1356,44 @@ public abstract class RowCoderGenerator {
           fieldValues[encodingPosToIndex[encodingPos]] = coders[encodingPos].decode(inputStream);
         }
       }
+    }
+  }
+
+  static String getFieldDescriptor(TypeName typeName) {
+    switch (typeName) {
+      case BYTE:
+        return "B";
+      case INT16:
+        return "S";
+      case INT32:
+        return "I";
+      case INT64:
+        return "J";
+      case FLOAT:
+        return "F";
+      case DOUBLE:
+        return "D";
+      case BOOLEAN:
+        return "Z";
+      case STRING:
+        return "Ljava/lang/String;";
+      case BYTES:
+        return "[B";
+      case DECIMAL:
+        return "Ljava/math/BigDecimal;";
+      case DATETIME:
+        return "Lorg/joda/time/ReadableInstant;";
+      case ROW:
+        return ROW_DESC;
+      case ARRAY:
+        return "Ljava/util/Collection;";
+      case ITERABLE:
+        return "Ljava/lang/Iterable;";
+      case MAP:
+        return "Ljava/util/Map;";
+      case LOGICAL_TYPE:
+      default:
+        return OBJECT_DESC;
     }
   }
 }

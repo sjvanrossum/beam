@@ -85,7 +85,7 @@ import org.joda.time.ReadableInstant;
 public abstract class Row implements Serializable {
   private final Schema schema;
 
-  Row(Schema schema) {
+  public Row(Schema schema) {
     this.schema = schema;
   }
 
@@ -830,11 +830,12 @@ public abstract class Row implements Serializable {
     @Internal
     public Row attachValues(List<@Nullable Object> attachedValues) {
       checkState(isEmpty());
-      return new RowWithStorage(schema, attachedValues);
+      return RowGenerator.createFromList(schema, attachedValues);
     }
 
     public Row attachValues(@Nullable Object... values) {
-      return attachValues(Arrays.asList(values));
+      checkState(isEmpty());
+      return RowGenerator.createFromArray(schema, values);
     }
 
     public int nextFieldId() {
@@ -895,7 +896,7 @@ public abstract class Row implements Serializable {
             String.format("%s is not nullable in field %s", field.getType(), field.getName()));
       }
     }
-    return new RowWithStorage(schema, Collections.nCopies(fieldCount, null));
+    return RowGenerator.createNullRow(schema);
   }
 
   /** Returns an equivalent {@link Row} with fields lexicographically sorted by their name. */

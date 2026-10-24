@@ -43,6 +43,10 @@ import org.joda.time.base.AbstractInstant;
 })
 class RowUtils {
   static Row captureRow(Schema schema, List<@Nullable Object> rawValues) {
+    return RowGenerator.captureRow(schema, rawValues);
+  }
+
+  static Row captureRowFallback(Schema schema, List<@Nullable Object> rawValues) {
     int fieldCount = schema.getFieldCount();
     List<@Nullable Object> capturedValues = new ArrayList<>(fieldCount);
     for (int i = 0; i < fieldCount; i++) {
@@ -279,7 +283,7 @@ class RowUtils {
             }
           }
         }
-        return new RowWithStorage(schema, values);
+        return RowGenerator.createFromList(schema, values);
       }
     }
   }

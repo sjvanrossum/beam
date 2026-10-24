@@ -22,7 +22,6 @@ import static org.apache.beam.sdk.util.ByteBuddyUtils.getClassLoadingStrategy;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Type;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -45,8 +44,6 @@ import net.bytebuddy.implementation.bytecode.Removal;
 import net.bytebuddy.implementation.bytecode.StackManipulation;
 import net.bytebuddy.implementation.bytecode.TypeCreation;
 import net.bytebuddy.implementation.bytecode.assign.TypeCasting;
-import net.bytebuddy.implementation.bytecode.collection.ArrayAccess;
-import net.bytebuddy.implementation.bytecode.constant.IntegerConstant;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
@@ -61,7 +58,6 @@ import org.apache.beam.sdk.schemas.SchemaUserTypeCreator;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.ConstructorCreateInstruction;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.InjectPackageStrategy;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.StaticFactoryMethodInstruction;
-import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.TypeConversion;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.TypeConversionsFactory;
 import org.apache.beam.sdk.schemas.utils.ReflectUtils.TypeDescriptorWithSchema;
 import org.apache.beam.sdk.util.Preconditions;
@@ -221,7 +217,8 @@ public class JavaBeanUtils {
             .method(ElementMatchers.named("get"))
             .intercept(new InvokeGetterInstruction(typeInformation, typeConversionsFactory));
     Method method =
-        Preconditions.checkArgumentNotNull(typeInformation.getMethod(), GETTER_WITH_NULL_METHOD_ERROR);
+        Preconditions.checkArgumentNotNull(
+            typeInformation.getMethod(), GETTER_WITH_NULL_METHOD_ERROR);
     Class<?> rawType = method.getReturnType();
     if (rawType.isPrimitive()) {
       String getterMethodName = ByteBuddyUtils.primitiveGetterMethodName(rawType);

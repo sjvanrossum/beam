@@ -178,11 +178,10 @@ public class ByteBuddyUtils {
     throw new IllegalArgumentException("Not an inferred logical type: " + rawType);
   }
 
-  /**Stack manipulation that pushes the static {@link LogicalType} for the given Java type. */
+  /** Stack manipulation that pushes the static {@link LogicalType} for the given Java type. */
   private static StackManipulation loadLogicalType(Class<?> rawType) {
     LogicalType<?, ?> logicalType =
-        checkNotNull(
-            inferredLogicalTypeFor(rawType), "Not an inferred logical type: %s", rawType);
+        checkNotNull(inferredLogicalTypeFor(rawType), "Not an inferred logical type: %s", rawType);
     return org.apache.beam.sdk.util.ByteBuddyUtils.loadConstantDynamic(
         "LOGICAL_" + rawType.getSimpleName(), LogicalType.class, logicalType);
   }

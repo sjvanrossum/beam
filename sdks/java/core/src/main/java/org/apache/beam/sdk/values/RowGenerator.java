@@ -91,8 +91,7 @@ public final class RowGenerator {
     try {
       CREATE_VALUES_VIEW_METHOD =
           RowGenerator.class.getDeclaredMethod("createValuesView", Row.class);
-      TO_SERIALIZED_ROW_METHOD =
-          RowGenerator.class.getDeclaredMethod("toSerializedRow", Row.class);
+      TO_SERIALIZED_ROW_METHOD = RowGenerator.class.getDeclaredMethod("toSerializedRow", Row.class);
     } catch (NoSuchMethodException e) {
       throw new ExceptionInInitializerError(e);
     }
@@ -206,7 +205,8 @@ public final class RowGenerator {
 
   public static Row createNullRow(Schema schema) {
     if (!isSupported(schema)) {
-      return new RowWithStorage(schema, java.util.Collections.nCopies(schema.getFieldCount(), null));
+      return new RowWithStorage(
+          schema, java.util.Collections.nCopies(schema.getFieldCount(), null));
     }
     return getFactory(schema).nullRow(schema);
   }
@@ -345,9 +345,11 @@ public final class RowGenerator {
             .intercept(MethodCall.invoke(CREATE_VALUES_VIEW_METHOD).withThis())
             .method(ElementMatchers.named("isNull").and(ElementMatchers.takesArguments(int.class)))
             .intercept(new IsNullImplementation(fieldCount))
-            .method(ElementMatchers.named("getValue").and(ElementMatchers.takesArguments(int.class)))
+            .method(
+                ElementMatchers.named("getValue").and(ElementMatchers.takesArguments(int.class)))
             .intercept(new GetValueImplementation(fieldCount, typeNames, descriptors))
-            .method(ElementMatchers.named("equals").and(ElementMatchers.takesArguments(Object.class)))
+            .method(
+                ElementMatchers.named("equals").and(ElementMatchers.takesArguments(Object.class)))
             .intercept(new EqualsImplementation(fieldCount, typeNames, descriptors))
             .method(ElementMatchers.named("hashCode").and(ElementMatchers.takesNoArguments()))
             .intercept(new HashCodeImplementation(fieldCount, typeNames, nullables, descriptors))
@@ -581,8 +583,7 @@ public final class RowGenerator {
     private final TypeName[] typeNames;
     private final String[] descriptors;
 
-    FromArrayConstructorImplementation(
-        int fieldCount, TypeName[] typeNames, String[] descriptors) {
+    FromArrayConstructorImplementation(int fieldCount, TypeName[] typeNames, String[] descriptors) {
       this.fieldCount = fieldCount;
       this.typeNames = typeNames;
       this.descriptors = descriptors;
@@ -1002,7 +1003,8 @@ public final class RowGenerator {
         mv.visitInsn(Opcodes.LCMP);
         mv.visitJumpInsn(Opcodes.IFNE, returnFalse);
 
-        // Pass 1: Compare primitive fields first (since nullMask matched, any null primitive field is 0 in both)
+        // Pass 1: Compare primitive fields first (since nullMask matched, any null primitive field
+        // is 0 in both)
         for (int i = 0; i < fieldCount; i++) {
           if (!isPrimitiveField(typeNames[i])) {
             continue;
@@ -1053,11 +1055,9 @@ public final class RowGenerator {
 
         // if (!Objects.equals(this.getSchema(), other.getSchema())) return false;
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(
-            Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
         mv.visitVarInsn(Opcodes.ALOAD, 2);
-        mv.visitMethodInsn(
-            Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
         mv.visitMethodInsn(
             Opcodes.INVOKESTATIC,
             "java/util/Objects",
@@ -1171,8 +1171,7 @@ public final class RowGenerator {
             case INT64:
               mv.visitVarInsn(Opcodes.ALOAD, 0);
               mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);
-              mv.visitMethodInsn(
-                  Opcodes.INVOKESTATIC, "java/lang/Long", "hashCode", "(J)I", false);
+              mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/Long", "hashCode", "(J)I", false);
               break;
             case FLOAT:
               mv.visitVarInsn(Opcodes.ALOAD, 0);

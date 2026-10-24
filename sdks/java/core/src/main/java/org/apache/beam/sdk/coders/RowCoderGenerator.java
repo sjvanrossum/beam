@@ -99,7 +99,8 @@ public abstract class RowCoderGenerator {
 
   private static final String SCHEMA_OPTION_STATIC_ENCODING = "beam:option:row:static_encoding";
 
-  private static final String INTERNAL_GENERATOR_NAME = Type.getInternalName(RowCoderGenerator.class);
+  private static final String INTERNAL_GENERATOR_NAME =
+      Type.getInternalName(RowCoderGenerator.class);
   private static final String INTERNAL_ROW_NAME = Type.getInternalName(Row.class);
   private static final String INTERNAL_VARINT_NAME = Type.getInternalName(VarInt.class);
   private static final String SCHEMA_DESC = Type.getDescriptor(Schema.class);
@@ -249,9 +250,7 @@ public abstract class RowCoderGenerator {
           TypeDescription.Generic.Builder.parameterizedType(Coder.class, Row.class).build();
       DynamicType.Builder<Coder> builder =
           (DynamicType.Builder<Coder>)
-              BYTE_BUDDY
-                  .subclass(coderType)
-                  .modifiers(Visibility.PUBLIC, TypeManifestation.FINAL);
+              BYTE_BUDDY.subclass(coderType).modifiers(Visibility.PUBLIC, TypeManifestation.FINAL);
       builder = implementMethods(schema, componentCoders, encodingPosToRowIndex, builder);
 
       Coder<Row> rowCoder;
@@ -329,7 +328,8 @@ public abstract class RowCoderGenerator {
   public static byte readByte(InputStream in) throws IOException {
     int b = in.read();
     if (b == -1) {
-      throw new CoderException(new EOFException("EOF encountered decoding 1 byte from input stream"));
+      throw new CoderException(
+          new EOFException("EOF encountered decoding 1 byte from input stream"));
     }
     return (byte) b;
   }
@@ -385,7 +385,8 @@ public abstract class RowCoderGenerator {
     } else if (b == 1) {
       return true;
     } else if (b == -1) {
-      throw new CoderException(new EOFException("EOF encountered decoding 1 byte from input stream"));
+      throw new CoderException(
+          new EOFException("EOF encountered decoding 1 byte from input stream"));
     }
     throw new IOException(String.format("Expected 0 or 1, got %d", (byte) b));
   }
@@ -474,8 +475,7 @@ public abstract class RowCoderGenerator {
   }
 
   @SuppressWarnings("unchecked")
-  public static Object readLogicalLong(LogicalType logicalType, InputStream in)
-      throws IOException {
+  public static Object readLogicalLong(LogicalType logicalType, InputStream in) throws IOException {
     return logicalType.toInputType(VarInt.decodeLong(in));
   }
 
@@ -486,8 +486,7 @@ public abstract class RowCoderGenerator {
   }
 
   @SuppressWarnings("unchecked")
-  public static Object readLogicalInt(LogicalType logicalType, InputStream in)
-      throws IOException {
+  public static Object readLogicalInt(LogicalType logicalType, InputStream in) throws IOException {
     return logicalType.toInputType(VarInt.decodeInt(in));
   }
 
@@ -592,8 +591,7 @@ public abstract class RowCoderGenerator {
             Label notNull = new Label();
             mv.visitVarInsn(Opcodes.ALOAD, 3);
             pushInt(mv, rowIdx);
-            mv.visitMethodInsn(
-                Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "isNull", "(I)Z", false);
+            mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "isNull", "(I)Z", false);
             mv.visitJumpInsn(Opcodes.IFEQ, notNull);
             mv.visitLdcInsn(1L << encPos);
             mv.visitInsn(Opcodes.LOR);
@@ -873,11 +871,7 @@ public abstract class RowCoderGenerator {
               mv.visitVarInsn(Opcodes.ALOAD, 3);
               pushInt(mv, rowIdx);
               mv.visitMethodInsn(
-                  Opcodes.INVOKEVIRTUAL,
-                  INTERNAL_ROW_NAME,
-                  "getValue",
-                  "(I)" + OBJECT_DESC,
-                  false);
+                  Opcodes.INVOKEVIRTUAL, INTERNAL_ROW_NAME, "getValue", "(I)" + OBJECT_DESC, false);
               mv.visitVarInsn(Opcodes.ALOAD, 2);
               mv.visitMethodInsn(
                   Opcodes.INVOKESTATIC,
@@ -1366,7 +1360,13 @@ public abstract class RowCoderGenerator {
             Opcodes.INVOKESTATIC,
             Type.getInternalName(DecodeInstruction.class),
             delegateMethodName,
-            "(" + SCHEMA_DESC + CODER_ARRAY_DESC + INT_ARRAY_DESC + INPUT_STREAM_DESC + ")" + ROW_DESC,
+            "("
+                + SCHEMA_DESC
+                + CODER_ARRAY_DESC
+                + INT_ARRAY_DESC
+                + INPUT_STREAM_DESC
+                + ")"
+                + ROW_DESC,
             false);
         mv.visitInsn(Opcodes.ARETURN);
         return new ByteCodeAppender.Size(6, 4);
@@ -1421,7 +1421,8 @@ public abstract class RowCoderGenerator {
 
       boolean identityOrder = isIdentityPermutation(encodingPosToRowIndex);
       if (!hasNullableFields && identityOrder) {
-        // Fast path when schema has no nullable fields and wireFieldCount == fieldCount && nullBytesLen == 0
+        // Fast path when schema has no nullable fields and wireFieldCount == fieldCount &&
+        // nullBytesLen == 0
         Label generalPath = new Label();
         Label doneLabel = new Label();
 
@@ -1517,7 +1518,8 @@ public abstract class RowCoderGenerator {
 
       if (identityOrder) {
         long allFieldsMask = fieldCount == 64 ? -1L : (1L << fieldCount) - 1L;
-        // If wireFieldCount < fieldCount, mark trailing fields [wireFieldCount .. fieldCount-1] as null
+        // If wireFieldCount < fieldCount, mark trailing fields [wireFieldCount .. fieldCount-1] as
+        // null
         Label maskReady = new Label();
         mv.visitVarInsn(Opcodes.ILOAD, 3);
         pushInt(mv, fieldCount);

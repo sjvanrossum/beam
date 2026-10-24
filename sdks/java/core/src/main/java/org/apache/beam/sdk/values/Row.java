@@ -529,49 +529,69 @@ public abstract class Row implements Serializable {
   }
 
   public static class Equals {
+    private static boolean requiresDeepComparison(Schema.FieldType type) {
+      switch (type.getTypeName()) {
+        case LOGICAL_TYPE:
+        case BYTES:
+        case ARRAY:
+        case ITERABLE:
+        case MAP:
+          return true;
+        default:
+          return false;
+      }
+    }
+
     public static boolean deepEquals(Object a, Object b, Schema.FieldType fieldType) {
+      if (a == b) {
+        return true;
+      }
       if (a == null || b == null) {
-        return a == b;
-      } else if (fieldType.getTypeName() == TypeName.LOGICAL_TYPE) {
+        return false;
+      }
+      TypeName typeName = fieldType.getTypeName();
+      if (typeName == TypeName.LOGICAL_TYPE) {
         Schema.LogicalType<Object, Object> logicalType =
             (Schema.LogicalType<Object, Object>) fieldType.getLogicalType();
         return deepEquals(
             SchemaUtils.toLogicalBaseType(logicalType, a),
             SchemaUtils.toLogicalBaseType(logicalType, b),
             logicalType.getBaseType());
-      } else if (fieldType.getTypeName() == Schema.TypeName.BYTES) {
+      } else if (typeName == Schema.TypeName.BYTES) {
         return Arrays.equals((byte[]) a, (byte[]) b);
-      } else if (fieldType.getTypeName() == TypeName.ARRAY) {
+      } else if (typeName == TypeName.ARRAY) {
         return deepEqualsForCollection(
             (Collection<Object>) a, (Collection<Object>) b, fieldType.getCollectionElementType());
-      } else if (fieldType.getTypeName() == TypeName.ITERABLE) {
+      } else if (typeName == TypeName.ITERABLE) {
         return deepEqualsForIterable(
             (Iterable<Object>) a, (Iterable<Object>) b, fieldType.getCollectionElementType());
-      } else if (fieldType.getTypeName() == Schema.TypeName.MAP) {
+      } else if (typeName == Schema.TypeName.MAP) {
         return deepEqualsForMap(
             (Map<Object, Object>) a, (Map<Object, Object>) b, fieldType.getMapValueType());
       } else {
-        return Objects.equals(a, b);
+        return a.equals(b);
       }
     }
 
     public static int deepHashCode(Object a, Schema.FieldType fieldType) {
       if (a == null) {
         return 0;
-      } else if (fieldType.getTypeName() == TypeName.LOGICAL_TYPE) {
+      }
+      TypeName typeName = fieldType.getTypeName();
+      if (typeName == TypeName.LOGICAL_TYPE) {
         Schema.LogicalType<Object, Object> logicalType =
             (Schema.LogicalType<Object, Object>) fieldType.getLogicalType();
         return deepHashCode(
             SchemaUtils.toLogicalBaseType(logicalType, a), logicalType.getBaseType());
-      } else if (fieldType.getTypeName() == Schema.TypeName.BYTES) {
+      } else if (typeName == Schema.TypeName.BYTES) {
         return Arrays.hashCode((byte[]) a);
-      } else if (fieldType.getTypeName().isCollectionType()) {
+      } else if (typeName.isCollectionType()) {
         return deepHashCodeForIterable((Iterable<Object>) a, fieldType.getCollectionElementType());
-      } else if (fieldType.getTypeName() == Schema.TypeName.MAP) {
+      } else if (typeName == Schema.TypeName.MAP) {
         return deepHashCodeForMap(
             (Map<Object, Object>) a, fieldType.getMapKeyType(), fieldType.getMapValueType());
       } else {
-        return Objects.hashCode(a);
+        return a.hashCode();
       }
     }
 
@@ -579,9 +599,11 @@ public abstract class Row implements Serializable {
       if (a == b) {
         return true;
       }
-
       if (a.size() != b.size()) {
         return false;
+      }
+      if (!requiresDeepComparison(valueType)) {
+        return a.equals(b);
       }
 
       for (Map.Entry<K, V> e : a.entrySet()) {
@@ -605,6 +627,9 @@ public abstract class Row implements Serializable {
 
     static int deepHashCodeForMap(
         Map<Object, Object> a, Schema.FieldType keyType, Schema.FieldType valueType) {
+      if (!requiresDeepComparison(keyType) && !requiresDeepComparison(valueType)) {
+        return a.hashCode();
+      }
       int h = 0;
 
       for (Map.Entry<Object, Object> e : a.entrySet()) {
@@ -622,9 +647,11 @@ public abstract class Row implements Serializable {
       if (a == b) {
         return true;
       }
-
       if (a.size() != b.size()) {
         return false;
+      }
+      if (!requiresDeepComparison(elementType) && a instanceof List && b instanceof List) {
+        return ((List<?>) a).equals((List<?>) b);
       }
 
       return deepEqualsForIterable(a, b, elementType);
@@ -648,6 +675,9 @@ public abstract class Row implements Serializable {
     }
 
     static int deepHashCodeForIterable(Iterable<Object> a, Schema.FieldType elementType) {
+      if (!requiresDeepComparison(elementType) && a instanceof List) {
+        return ((List<?>) a).hashCode();
+      }
       int h = 1;
       for (Object o : a) {
         h = 31 * h + deepHashCode(o, elementType);

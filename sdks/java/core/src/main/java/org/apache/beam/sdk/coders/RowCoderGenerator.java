@@ -24,7 +24,6 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.invoke.MethodHandles;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
@@ -32,8 +31,6 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import net.bytebuddy.ByteBuddy;
@@ -43,12 +40,12 @@ import net.bytebuddy.description.modifier.TypeManifestation;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.VisibilityBridgeStrategy;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
+import net.bytebuddy.dynamic.scaffold.TypeValidation;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.jar.asm.ClassWriter;
-import net.bytebuddy.jar.asm.ConstantDynamic;
-import net.bytebuddy.jar.asm.Handle;
 import net.bytebuddy.jar.asm.Label;
 import net.bytebuddy.jar.asm.MethodVisitor;
 import net.bytebuddy.jar.asm.Opcodes;
@@ -60,6 +57,7 @@ import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.schemas.Schema.LogicalType;
 import org.apache.beam.sdk.schemas.Schema.TypeName;
 import org.apache.beam.sdk.schemas.SchemaCoder;
+import org.apache.beam.sdk.util.ByteBuddyUtils;
 import org.apache.beam.sdk.util.StringUtils;
 import org.apache.beam.sdk.util.VarInt;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
@@ -87,7 +85,11 @@ import org.slf4j.LoggerFactory;
   "rawtypes"
 })
 public abstract class RowCoderGenerator {
-  private static final ByteBuddy BYTE_BUDDY = new ByteBuddy(ClassFileVersion.JAVA_V11);
+  private static final ByteBuddy BYTE_BUDDY =
+      new ByteBuddy(ClassFileVersion.ofThisVm(ClassFileVersion.JAVA_V11))
+          .with(TypeValidation.DISABLED)
+          .with(Implementation.Context.Disabled.Factory.INSTANCE)
+          .with(VisibilityBridgeStrategy.Default.NEVER);
   private static final BitSetCoder NULL_LIST_CODER = BitSetCoder.of();
   private static final StringUtf8Coder STRING_CODER = StringUtf8Coder.of();
   private static final ByteArrayCoder BYTE_ARRAY_CODER = ByteArrayCoder.of();
@@ -107,37 +109,9 @@ public abstract class RowCoderGenerator {
   private static final String ROW_DESC = Type.getDescriptor(Row.class);
   private static final String OBJECT_DESC = Type.getDescriptor(Object.class);
 
-  private static final ConcurrentHashMap<Integer, Object> CONSTANTS = new ConcurrentHashMap<>();
-  private static final AtomicInteger NEXT_CONSTANT_ID = new AtomicInteger();
-
-  private static final Handle BOOTSTRAP_CONSTANT_HANDLE =
-      new Handle(
-          Opcodes.H_INVOKESTATIC,
-          INTERNAL_GENERATOR_NAME,
-          "bootstrapConstant",
-          "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;I)Ljava/lang/Object;",
-          false);
-
-  static int registerConstant(Object value) {
-    int id = NEXT_CONSTANT_ID.getAndIncrement();
-    CONSTANTS.put(id, value);
-    return id;
-  }
-
-  public static Object bootstrapConstant(
-      MethodHandles.Lookup lookup, String name, Class<?> type, int id) {
-    return CONSTANTS.get(id);
-  }
-
   static void emitLdcConstant(
       MethodVisitor mv, String name, Class<?> constantType, Object value) {
-    int id = registerConstant(value);
-    mv.visitLdcInsn(
-        new ConstantDynamic(
-            name,
-            Type.getDescriptor(constantType),
-            BOOTSTRAP_CONSTANT_HANDLE,
-            id));
+    ByteBuddyUtils.emitLdcConstant(mv, name, constantType, value);
   }
 
   static Class<?> accessibleCoderClass(Class<?> coderClass) {
@@ -228,7 +202,6 @@ public abstract class RowCoderGenerator {
   static void clearRowCoderCache() {
     synchronized (cacheLock) {
       GENERATED_CODERS.clear();
-      CONSTANTS.clear();
     }
   }
 

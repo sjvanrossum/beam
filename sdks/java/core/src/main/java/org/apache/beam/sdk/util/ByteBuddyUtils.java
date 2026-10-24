@@ -18,15 +18,75 @@
 package org.apache.beam.sdk.util;
 
 import java.lang.invoke.MethodHandles;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.loading.ClassInjector;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.jar.asm.ConstantDynamic;
+import net.bytebuddy.jar.asm.Handle;
+import net.bytebuddy.jar.asm.MethodVisitor;
+import net.bytebuddy.jar.asm.Opcodes;
+import net.bytebuddy.jar.asm.Type;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
 
 /** Utilities for working with Byte Buddy. */
 public final class ByteBuddyUtils {
   private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
+  private static final ConcurrentHashMap<Integer, Object> CONSTANTS = new ConcurrentHashMap<>();
+  private static final AtomicInteger NEXT_CONSTANT_ID = new AtomicInteger();
+
+  private static final Handle BOOTSTRAP_CONSTANT_HANDLE =
+      new Handle(
+          Opcodes.H_INVOKESTATIC,
+          Type.getInternalName(ByteBuddyUtils.class),
+          "bootstrapConstant",
+          "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;I)Ljava/lang/Object;",
+          false);
 
   private ByteBuddyUtils() {} // Non-instantiable
+
+  /** Bootstrap method for resolving dynamically-computed constants (JVMS 5.4.3.6). */
+  public static Object bootstrapConstant(
+      MethodHandles.Lookup lookup, String name, Class<?> type, int id) {
+    return Preconditions.checkNotNull(CONSTANTS.get(id), "No constant registered for id %s", id);
+  }
+
+  /** Creates a {@link ConstantDynamic} representing the given live object reference. */
+  public static ConstantDynamic createConstantDynamic(
+      String name, Class<?> constantType, Object value) {
+    int id = NEXT_CONSTANT_ID.getAndIncrement();
+    CONSTANTS.put(id, value);
+    return new ConstantDynamic(
+        name, Type.getDescriptor(constantType), BOOTSTRAP_CONSTANT_HANDLE, id);
+  }
+
+  /** Emits an {@code LDC} instruction loading the given live object via {@link ConstantDynamic}. */
+  public static void emitLdcConstant(
+      MethodVisitor mv, String name, Class<?> constantType, Object value) {
+    mv.visitLdcInsn(createConstantDynamic(name, constantType, value));
+  }
+
+  /**
+   * Returns a Byte Buddy {@link StackManipulation} that pushes the given live object onto the
+   * operand stack via {@link ConstantDynamic}.
+   */
+  public static StackManipulation loadConstantDynamic(
+      String name, Class<?> constantType, Object value) {
+    ConstantDynamic condy = createConstantDynamic(name, constantType, value);
+    StackManipulation.Size size =
+        TypeDescription.ForLoadedType.of(constantType).getStackSize().toIncreasingSize();
+    return new StackManipulation.AbstractBase() {
+      @Override
+      public Size apply(MethodVisitor mv, Implementation.Context implementationContext) {
+        mv.visitLdcInsn(condy);
+        return size;
+      }
+    };
+  }
 
   /** Returns a class loading strategy that is compatible with Java 11+. */
   public static ClassLoadingStrategy<ClassLoader> getClassLoadingStrategy(Class<?> targetClass) {

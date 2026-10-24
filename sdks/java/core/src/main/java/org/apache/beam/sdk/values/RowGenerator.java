@@ -35,7 +35,9 @@ import net.bytebuddy.asm.AsmVisitorWrapper;
 import net.bytebuddy.description.modifier.TypeManifestation;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.VisibilityBridgeStrategy;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
+import net.bytebuddy.dynamic.scaffold.TypeValidation;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
 import net.bytebuddy.jar.asm.ClassWriter;
@@ -64,7 +66,11 @@ import org.joda.time.ReadableInstant;
   "rawtypes"
 })
 public final class RowGenerator {
-  private static final ByteBuddy BYTE_BUDDY = new ByteBuddy(ClassFileVersion.JAVA_V11);
+  private static final ByteBuddy BYTE_BUDDY =
+      new ByteBuddy(ClassFileVersion.ofThisVm(ClassFileVersion.JAVA_V11))
+          .with(TypeValidation.DISABLED)
+          .with(Implementation.Context.Disabled.Factory.INSTANCE)
+          .with(VisibilityBridgeStrategy.Default.NEVER);
   private static final String INTERNAL_ROW_NAME = Type.getInternalName(Row.class);
   private static final String INTERNAL_GENERATOR_NAME = Type.getInternalName(RowGenerator.class);
   private static final String SCHEMA_DESC = Type.getDescriptor(Schema.class);
@@ -252,10 +258,19 @@ public final class RowGenerator {
 
   public static boolean deepEqualsField(
       Row row, int fieldIdx, @Nullable Object a, @Nullable Object b) {
+    if (a == b) {
+      return true;
+    }
+    if (a == null || b == null) {
+      return false;
+    }
     return Row.Equals.deepEquals(a, b, row.getSchema().getField(fieldIdx).getType());
   }
 
   public static int deepHashCodeField(Row row, int fieldIdx, @Nullable Object a) {
+    if (a == null) {
+      return 0;
+    }
     return Row.Equals.deepHashCode(a, row.getSchema().getField(fieldIdx).getType());
   }
 
@@ -1058,23 +1073,11 @@ public final class RowGenerator {
         mv.visitInsn(Opcodes.LCMP);
         mv.visitJumpInsn(Opcodes.IFNE, returnFalse);
 
-        // if (!Objects.equals(this.getSchema(), other.getSchema())) return false;
-        mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(
-            Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
-        mv.visitVarInsn(Opcodes.ALOAD, 2);
-        mv.visitMethodInsn(
-            Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
-        mv.visitMethodInsn(
-            Opcodes.INVOKESTATIC,
-            "java/util/Objects",
-            "equals",
-            "(Ljava/lang/Object;Ljava/lang/Object;)Z",
-            false);
-        mv.visitJumpInsn(Opcodes.IFEQ, returnFalse);
-
-        // Compare each field directly (since nullMask matched, any null primitive field is 0 in both)
+        // Pass 1: Compare primitive fields first (since nullMask matched, any null primitive field is 0 in both)
         for (int i = 0; i < fieldCount; i++) {
+          if (!isPrimitiveField(typeNames[i])) {
+            continue;
+          }
           String fName = fieldName(i);
           String fDesc = descriptors[i];
           switch (typeNames[i]) {
@@ -1099,26 +1102,49 @@ public final class RowGenerator {
             case FLOAT:
               mv.visitVarInsn(Opcodes.ALOAD, 0);
               mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);
-              mv.visitMethodInsn(
-                  Opcodes.INVOKESTATIC, "java/lang/Float", "floatToIntBits", "(F)I", false);
               mv.visitVarInsn(Opcodes.ALOAD, 2);
               mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);
               mv.visitMethodInsn(
-                  Opcodes.INVOKESTATIC, "java/lang/Float", "floatToIntBits", "(F)I", false);
-              mv.visitJumpInsn(Opcodes.IF_ICMPNE, returnFalse);
+                  Opcodes.INVOKESTATIC, "java/lang/Float", "compare", "(FF)I", false);
+              mv.visitJumpInsn(Opcodes.IFNE, returnFalse);
               break;
             case DOUBLE:
               mv.visitVarInsn(Opcodes.ALOAD, 0);
               mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);
-              mv.visitMethodInsn(
-                  Opcodes.INVOKESTATIC, "java/lang/Double", "doubleToLongBits", "(D)J", false);
               mv.visitVarInsn(Opcodes.ALOAD, 2);
               mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);
               mv.visitMethodInsn(
-                  Opcodes.INVOKESTATIC, "java/lang/Double", "doubleToLongBits", "(D)J", false);
-              mv.visitInsn(Opcodes.LCMP);
+                  Opcodes.INVOKESTATIC, "java/lang/Double", "compare", "(DD)I", false);
               mv.visitJumpInsn(Opcodes.IFNE, returnFalse);
               break;
+            default:
+              break;
+          }
+        }
+
+        // if (!Objects.equals(this.getSchema(), other.getSchema())) return false;
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(
+            Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(
+            Opcodes.INVOKEVIRTUAL, owner, "getSchema", "()" + SCHEMA_DESC, false);
+        mv.visitMethodInsn(
+            Opcodes.INVOKESTATIC,
+            "java/util/Objects",
+            "equals",
+            "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+            false);
+        mv.visitJumpInsn(Opcodes.IFEQ, returnFalse);
+
+        // Pass 2: Compare reference fields
+        for (int i = 0; i < fieldCount; i++) {
+          if (isPrimitiveField(typeNames[i])) {
+            continue;
+          }
+          String fName = fieldName(i);
+          String fDesc = descriptors[i];
+          switch (typeNames[i]) {
             case BYTES:
               mv.visitVarInsn(Opcodes.ALOAD, 0);
               mv.visitFieldInsn(Opcodes.GETFIELD, owner, fName, fDesc);

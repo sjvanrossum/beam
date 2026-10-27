@@ -63,6 +63,7 @@ import org.apache.beam.sdk.transforms.DoFn.MultiOutputReceiver;
 import org.apache.beam.sdk.transforms.DoFn.OutputReceiver;
 import org.apache.beam.sdk.transforms.reflect.DoFnInvoker.FakeArgumentProvider;
 import org.apache.beam.sdk.transforms.reflect.DoFnSignature.TimerDeclaration;
+import org.apache.beam.sdk.transforms.reflect.DoFnSignature.TimerFamilyDeclaration;
 import org.apache.beam.sdk.transforms.reflect.testhelper.DoFnInvokersTestHelper;
 import org.apache.beam.sdk.transforms.splittabledofn.HasDefaultTracker;
 import org.apache.beam.sdk.transforms.splittabledofn.HasDefaultWatermarkEstimator;
@@ -1378,6 +1379,68 @@ public class DoFnInvokersTest {
     DoFnInvoker<String, String> invoker = DoFnInvokers.invokerFor(fn);
     invoker.invokeOnTimer(TimerDeclaration.PREFIX + timerId, "", mockArgumentProvider);
     assertThat(fn.window, equalTo(testWindow));
+  }
+
+  @Test
+  public void testOnTimerAndTimerFamilyDispatchAndExceptions() throws Exception {
+    final String timerId1 = "timer-1";
+    final String timerId2 = "timer-2";
+    final String familyId = "family-1";
+    final IntervalWindow testWindow = new IntervalWindow(new Instant(0), new Instant(15));
+    when(mockArgumentProvider.window()).thenReturn(testWindow);
+    when(mockArgumentProvider.timerId(any(DoFn.class))).thenReturn("dynamic-timer-key");
+
+    class MultiTimerDoFn extends DoFn<String, String> {
+      public final List<String> calls = new ArrayList<>();
+
+      @TimerId(timerId1)
+      private final TimerSpec timer1 = TimerSpecs.timer(TimeDomain.PROCESSING_TIME);
+
+      @TimerId(timerId2)
+      private final TimerSpec timer2 = TimerSpecs.timer(TimeDomain.EVENT_TIME);
+
+      @TimerFamily(familyId)
+      private final TimerSpec timerFamily = TimerSpecs.timerMap(TimeDomain.EVENT_TIME);
+
+      @ProcessElement
+      public void process(ProcessContext c) {}
+
+      @OnTimer(timerId1)
+      public void onTimer1(IntervalWindow w) {
+        calls.add("t1:" + w);
+      }
+
+      @OnTimer(timerId2)
+      public void onTimer2() {
+        throw new IllegalStateException("boom");
+      }
+
+      @OnTimerFamily(familyId)
+      public void onFamily(@TimerId String dynamicTimerId, IntervalWindow w) {
+        calls.add("fam:" + dynamicTimerId + ":" + w);
+      }
+    }
+
+    MultiTimerDoFn fn = new MultiTimerDoFn();
+    DoFnInvoker<String, String> invoker = DoFnInvokers.invokerFor(fn);
+
+    invoker.invokeOnTimer(TimerDeclaration.PREFIX + timerId1, "", mockArgumentProvider);
+    invoker.invokeOnTimer(
+        "dynamic-timer-key", TimerFamilyDeclaration.PREFIX + familyId, mockArgumentProvider);
+    assertEquals(
+        Arrays.asList("t1:" + testWindow, "fam:dynamic-timer-key:" + testWindow), fn.calls);
+
+    UserCodeException thrown =
+        assertThrows(
+            UserCodeException.class,
+            () ->
+                invoker.invokeOnTimer(
+                    TimerDeclaration.PREFIX + timerId2, "", mockArgumentProvider));
+    assertThat(thrown.getCause(), instanceOf(IllegalStateException.class));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> invoker.invokeOnTimer("unknown-timer", "unknown-family", mockArgumentProvider));
   }
 
   static class StableNameTestDoFn extends DoFn<Void, Void> {

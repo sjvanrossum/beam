@@ -17,47 +17,96 @@
  */
 package org.apache.beam.sdk.util;
 
-import static java.util.Objects.requireNonNull;
-
-import java.lang.reflect.Method;
+import java.lang.invoke.MethodHandles;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.loading.ClassInjector;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.implementation.Implementation;
+import net.bytebuddy.implementation.bytecode.StackManipulation;
+import net.bytebuddy.jar.asm.ConstantDynamic;
+import net.bytebuddy.jar.asm.Handle;
+import net.bytebuddy.jar.asm.MethodVisitor;
+import net.bytebuddy.jar.asm.Opcodes;
+import net.bytebuddy.jar.asm.Type;
 import org.apache.beam.sdk.util.common.ReflectHelpers;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.base.Preconditions;
 
 /** Utilities for working with Byte Buddy. */
 public final class ByteBuddyUtils {
+  private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
+  private static final ConcurrentHashMap<Integer, Object> CONSTANTS = new ConcurrentHashMap<>();
+  private static final AtomicInteger NEXT_CONSTANT_ID = new AtomicInteger();
+
+  private static final Handle BOOTSTRAP_CONSTANT_HANDLE =
+      new Handle(
+          Opcodes.H_INVOKESTATIC,
+          Type.getInternalName(ByteBuddyUtils.class),
+          "bootstrapConstant",
+          "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;I)Ljava/lang/Object;",
+          false);
+
   private ByteBuddyUtils() {} // Non-instantiable
 
-  /** Returns a class loading strategy that is compatible with Java 17+. */
+  /** Bootstrap method for resolving dynamically-computed constants (JVMS 5.4.3.6). */
+  public static Object bootstrapConstant(
+      MethodHandles.Lookup lookup, String name, Class<?> type, int id) {
+    return Preconditions.checkNotNull(CONSTANTS.get(id), "No constant registered for id %s", id);
+  }
+
+  /** Creates a {@link ConstantDynamic} representing the given live object reference. */
+  public static ConstantDynamic createConstantDynamic(
+      String name, Class<?> constantType, Object value) {
+    int id = NEXT_CONSTANT_ID.getAndIncrement();
+    CONSTANTS.put(id, value);
+    return new ConstantDynamic(
+        name, Type.getDescriptor(constantType), BOOTSTRAP_CONSTANT_HANDLE, id);
+  }
+
+  /**
+   * Returns a Byte Buddy {@link StackManipulation} that pushes the given live object onto the
+   * operand stack via {@link ConstantDynamic}.
+   */
+  public static StackManipulation loadConstantDynamic(
+      String name, Class<?> constantType, Object value) {
+    ConstantDynamic condy = createConstantDynamic(name, constantType, value);
+    StackManipulation.Size size =
+        TypeDescription.ForLoadedType.of(constantType).getStackSize().toIncreasingSize();
+    return new StackManipulation.AbstractBase() {
+      @Override
+      public Size apply(MethodVisitor mv, Implementation.Context implementationContext) {
+        mv.visitLdcInsn(condy);
+        return size;
+      }
+    };
+  }
+
+  /** Returns a class loading strategy that is compatible with Java 11+. */
   public static ClassLoadingStrategy<ClassLoader> getClassLoadingStrategy(Class<?> targetClass) {
-    ClassLoadingStrategy<ClassLoader> strategy;
     ClassLoader classLoader = ReflectHelpers.findClassLoader(targetClass);
     // Use a Lookup-based strategy for user classes for compatibility with Java 17+, but use
     // a legacy strategy to allow proxying some built-in JDK classes (e.g. interfaces, public
     // abstract classes) since we don't have permissions to get a private lookup for the
     // java.base module
     boolean systemClass = classLoader == null;
-    if (ClassInjector.UsingLookup.isAvailable() && !systemClass) {
+    if (!systemClass) {
       try {
-        Class<?> methodHandles = Class.forName("java.lang.invoke.MethodHandles", true, classLoader);
-        @SuppressWarnings("nullness") // MethodHandles#lookup accepts null
-        Object lookup = methodHandles.getMethod("lookup").invoke(null);
-        Class<?> lookupClass =
-            Class.forName("java.lang.invoke.MethodHandles$Lookup", true, classLoader);
-        Method privateLookupIn =
-            methodHandles.getMethod("privateLookupIn", Class.class, lookupClass);
-        @SuppressWarnings("nullness") // this is a static method, the receiver can be null
-        Object privateLookup = requireNonNull(privateLookupIn.invoke(null, targetClass, lookup));
-        strategy = ClassLoadingStrategy.UsingLookup.of(requireNonNull(privateLookup));
-      } catch (ReflectiveOperationException e) {
+        Module thisModule = ByteBuddyUtils.class.getModule();
+        Module targetModule = targetClass.getModule();
+        if (!thisModule.canRead(targetModule)) {
+          thisModule.addReads(targetModule);
+        }
+        return ClassLoadingStrategy.UsingLookup.of(
+            MethodHandles.privateLookupIn(targetClass, LOOKUP));
+      } catch (IllegalAccessException e) {
         throw new IllegalStateException(
             "No code generation strategy available " + targetClass + " " + classLoader, e);
       }
     } else if (ClassInjector.UsingReflection.isAvailable()) {
-      strategy = ClassLoadingStrategy.Default.INJECTION;
+      return ClassLoadingStrategy.Default.INJECTION;
     } else {
       throw new IllegalStateException("No code generation strategy available");
     }
-    return strategy;
   }
 }

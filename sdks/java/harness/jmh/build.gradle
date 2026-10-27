@@ -33,6 +33,7 @@ configurations {
 dependencies {
     implementation project(path: ":sdks:java:core", configuration: "shadow")
     implementation project(path: ":sdks:java:harness", configuration: "shadow")
+    implementation project(path: ":sdks:java:harness", configuration: "shadowTest")
     implementation project(path: ":runners:java-fn-execution")
     implementation project(path: ":model:pipeline", configuration: "shadow")
     implementation project(path: ":model:fn-execution", configuration: "shadow")

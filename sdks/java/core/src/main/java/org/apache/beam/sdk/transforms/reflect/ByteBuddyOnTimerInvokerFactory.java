@@ -25,11 +25,18 @@ import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutionException;
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.ClassFileVersion;
+import net.bytebuddy.asm.AsmVisitorWrapper;
+import net.bytebuddy.description.field.FieldDescription;
+import net.bytebuddy.description.method.MethodDescription;
 import net.bytebuddy.description.modifier.FieldManifestation;
+import net.bytebuddy.description.modifier.TypeManifestation;
 import net.bytebuddy.description.modifier.Visibility;
 import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.VisibilityBridgeStrategy;
 import net.bytebuddy.dynamic.scaffold.InstrumentedType;
+import net.bytebuddy.dynamic.scaffold.TypeValidation;
 import net.bytebuddy.dynamic.scaffold.subclass.ConstructorStrategy;
 import net.bytebuddy.implementation.Implementation;
 import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
@@ -38,6 +45,7 @@ import net.bytebuddy.implementation.bytecode.member.FieldAccess;
 import net.bytebuddy.implementation.bytecode.member.MethodInvocation;
 import net.bytebuddy.implementation.bytecode.member.MethodReturn;
 import net.bytebuddy.implementation.bytecode.member.MethodVariableAccess;
+import net.bytebuddy.jar.asm.ClassWriter;
 import net.bytebuddy.matcher.ElementMatchers;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.DoFn.OnTimer;
@@ -57,6 +65,23 @@ import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.io.BaseEncodin
   "nullness" // TODO(https://github.com/apache/beam/issues/20497)
 })
 class ByteBuddyOnTimerInvokerFactory implements OnTimerInvokerFactory {
+
+  private static final ByteBuddy BYTE_BUDDY =
+      new ByteBuddy(ClassFileVersion.ofThisVm(ClassFileVersion.JAVA_V11))
+          .with(TypeValidation.DISABLED)
+          .with(Implementation.Context.Disabled.Factory.INSTANCE)
+          .with(VisibilityBridgeStrategy.Default.NEVER);
+
+  private static final MethodDescription OBJECT_DEFAULT_CONSTRUCTOR;
+
+  static {
+    try {
+      OBJECT_DEFAULT_CONSTRUCTOR =
+          new MethodDescription.ForLoadedConstructor(Object.class.getDeclaredConstructor());
+    } catch (NoSuchMethodException e) {
+      throw new ExceptionInInitializerError(e);
+    }
+  }
 
   @Override
   public <InputT, OutputT> OnTimerInvoker<InputT, OutputT> forTimer(
@@ -182,56 +207,18 @@ class ByteBuddyOnTimerInvokerFactory implements OnTimerInvokerFactory {
    */
   private static Class<? extends OnTimerInvoker<?, ?>> generateOnTimerInvokerClass(
       DoFnSignature signature, String timerId) {
-    Class<? extends DoFn<?, ?>> fnClass = signature.fnClass();
-
-    final TypeDescription clazzDescription = new TypeDescription.ForLoadedType(fnClass);
-
-    final String suffix =
-        String.format(
-            "%s$%s$%s",
-            OnTimerInvoker.class.getSimpleName(),
-            CharMatcher.javaLetterOrDigit().retainFrom(timerId),
-            BaseEncoding.base64().omitPadding().encode(timerId.getBytes(StandardCharsets.UTF_8)));
-
-    DynamicType.Builder<?> builder =
-        new ByteBuddy()
-            // Create subclasses inside the target class, to have access to
-            // private and package-private bits
-            .with(StableInvokerNamingStrategy.forDoFnClass(fnClass).withSuffix(suffix))
-
-            // class <invoker class> implements OnTimerInvoker {
-            .subclass(OnTimerInvoker.class, ConstructorStrategy.Default.NO_CONSTRUCTORS)
-
-            //   private final <fn class> delegate;
-            .defineField(
-                FN_DELEGATE_FIELD_NAME, fnClass, Visibility.PRIVATE, FieldManifestation.FINAL)
-
-            //   <invoker class>(<fn class> delegate) { this.delegate = delegate; }
-            .defineConstructor(Visibility.PUBLIC)
-            .withParameter(fnClass)
-            .intercept(new InvokerConstructor())
-
-            //   public invokeOnTimer(DoFn.ArgumentProvider) {
-            //     this.delegate.<@OnTimer method>(... pass the right args ...)
-            //   }
-            .method(ElementMatchers.named("invokeOnTimer"))
-            .intercept(
-                new InvokeOnTimerDelegation(
-                    clazzDescription, signature.onTimerMethods().get(timerId)));
-
-    DynamicType.Unloaded<?> unloaded = builder.make();
-
-    @SuppressWarnings("unchecked")
-    Class<? extends OnTimerInvoker<?, ?>> res =
-        (Class<? extends OnTimerInvoker<?, ?>>)
-            unloaded
-                .load(findClassLoader(fnClass.getClassLoader()), getClassLoadingStrategy(fnClass))
-                .getLoaded();
-    return res;
+    return generateInvokerClass(signature, timerId, signature.onTimerMethods().get(timerId));
   }
 
   private static Class<? extends OnTimerInvoker<?, ?>> generateOnTimerFamilyInvokerClass(
       DoFnSignature signature, String timerId) {
+    return generateInvokerClass(signature, timerId, signature.onTimerFamilyMethods().get(timerId));
+  }
+
+  private static Class<? extends OnTimerInvoker<?, ?>> generateInvokerClass(
+      DoFnSignature signature,
+      String timerId,
+      DoFnSignature.MethodWithExtraParameters methodSignature) {
     Class<? extends DoFn<?, ?>> fnClass = signature.fnClass();
 
     final TypeDescription clazzDescription = new TypeDescription.ForLoadedType(fnClass);
@@ -243,14 +230,15 @@ class ByteBuddyOnTimerInvokerFactory implements OnTimerInvokerFactory {
             CharMatcher.javaLetterOrDigit().retainFrom(timerId),
             BaseEncoding.base64().omitPadding().encode(timerId.getBytes(StandardCharsets.UTF_8)));
 
-    DynamicType.Builder<?> builder =
-        new ByteBuddy()
+    DynamicType.Unloaded<?> unloaded =
+        BYTE_BUDDY
             // Create subclasses inside the target class, to have access to
             // private and package-private bits
             .with(StableInvokerNamingStrategy.forDoFnClass(fnClass).withSuffix(suffix))
 
             // class <invoker class> implements OnTimerInvoker {
             .subclass(OnTimerInvoker.class, ConstructorStrategy.Default.NO_CONSTRUCTORS)
+            .modifiers(Visibility.PUBLIC, TypeManifestation.FINAL)
 
             //   private final <fn class> delegate;
             .defineField(
@@ -259,17 +247,18 @@ class ByteBuddyOnTimerInvokerFactory implements OnTimerInvokerFactory {
             //   <invoker class>(<fn class> delegate) { this.delegate = delegate; }
             .defineConstructor(Visibility.PUBLIC)
             .withParameter(fnClass)
-            .intercept(new InvokerConstructor())
+            .intercept(InvokerConstructor.INSTANCE)
 
             //   public invokeOnTimer(DoFn.ArgumentProvider) {
             //     this.delegate.<@OnTimer method>(... pass the right args ...)
             //   }
             .method(ElementMatchers.named("invokeOnTimer"))
             .intercept(
-                new InvokeOnTimerFamilyDelegation(
-                    clazzDescription, signature.onTimerFamilyMethods().get(timerId)));
-
-    DynamicType.Unloaded<?> unloaded = builder.make();
+                new DoFnMethodWithExtraParametersDelegation(clazzDescription, methodSignature))
+            .visit(
+                new AsmVisitorWrapper.ForDeclaredMethods()
+                    .writerFlags(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS))
+            .make();
 
     @SuppressWarnings("unchecked")
     Class<? extends OnTimerInvoker<?, ?>> res =
@@ -281,65 +270,14 @@ class ByteBuddyOnTimerInvokerFactory implements OnTimerInvokerFactory {
   }
 
   /**
-   * An "invokeOnTimer" method implementation akin to @ProcessElement, but simpler because no
-   * splitting-related parameters need to be handled.
-   */
-  private static class InvokeOnTimerFamilyDelegation
-      extends DoFnMethodWithExtraParametersDelegation {
-
-    public InvokeOnTimerFamilyDelegation(
-        TypeDescription clazzDescription, DoFnSignature.OnTimerFamilyMethod signature) {
-      super(clazzDescription, signature);
-    }
-
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      // Remember the field description of the instrumented type.
-      // Kind of a hack to set the protected value, because the instrumentedType
-      // is only available to prepare, while we need this information in
-      // beforeDelegation
-      delegateField =
-          instrumentedType
-              .getDeclaredFields() // the delegate is declared on the OnTimerInvoker
-              .filter(ElementMatchers.named(FN_DELEGATE_FIELD_NAME))
-              .getOnly();
-      // Delegating the method call doesn't require any changes to the instrumented type.
-      return instrumentedType;
-    }
-  }
-
-  /**
-   * An "invokeOnTimer" method implementation akin to @ProcessElement, but simpler because no
-   * splitting-related parameters need to be handled.
-   */
-  private static class InvokeOnTimerDelegation extends DoFnMethodWithExtraParametersDelegation {
-
-    public InvokeOnTimerDelegation(
-        TypeDescription clazzDescription, DoFnSignature.OnTimerMethod signature) {
-      super(clazzDescription, signature);
-    }
-
-    @Override
-    public InstrumentedType prepare(InstrumentedType instrumentedType) {
-      // Remember the field description of the instrumented type.
-      // Kind of a hack to set the protected value, because the instrumentedType
-      // is only available to prepare, while we need this information in
-      // beforeDelegation
-      delegateField =
-          instrumentedType
-              .getDeclaredFields() // the delegate is declared on the OnTimerInvoker
-              .filter(ElementMatchers.named(FN_DELEGATE_FIELD_NAME))
-              .getOnly();
-      // Delegating the method call doesn't require any changes to the instrumented type.
-      return instrumentedType;
-    }
-  }
-
-  /**
-   * A constructor {@link Implementation} for a {@link DoFnInvoker class}. Produces the byte code
-   * for a constructor that takes a single argument and assigns it to the delegate field.
+   * A constructor {@link Implementation} for an {@link OnTimerInvoker} class. Produces the byte
+   * code for a constructor that takes a single argument and assigns it to the delegate field.
    */
   private static final class InvokerConstructor implements Implementation {
+    static final InvokerConstructor INSTANCE = new InvokerConstructor();
+
+    private InvokerConstructor() {}
+
     @Override
     public InstrumentedType prepare(InstrumentedType instrumentedType) {
       return instrumentedType;
@@ -347,32 +285,22 @@ class ByteBuddyOnTimerInvokerFactory implements OnTimerInvokerFactory {
 
     @Override
     public ByteCodeAppender appender(final Target implementationTarget) {
+      FieldDescription delegateField =
+          implementationTarget
+              .getInstrumentedType()
+              .getDeclaredFields()
+              .filter(ElementMatchers.named(FN_DELEGATE_FIELD_NAME))
+              .getOnly();
       return (methodVisitor, implementationContext, instrumentedMethod) -> {
         StackManipulation.Size size =
             new StackManipulation.Compound(
-                    // Load the this reference
+                    // super()
                     MethodVariableAccess.REFERENCE.loadFrom(0),
-                    // Invoke the super constructor (default constructor of Object)
-                    MethodInvocation.invoke(
-                        new TypeDescription.ForLoadedType(Object.class)
-                            .getDeclaredMethods()
-                            .filter(
-                                ElementMatchers.isConstructor()
-                                    .and(ElementMatchers.takesArguments(0)))
-                            .getOnly()),
-                    // Load the this reference
+                    MethodInvocation.invoke(OBJECT_DEFAULT_CONSTRUCTOR),
+                    // this.delegate = delegate
                     MethodVariableAccess.REFERENCE.loadFrom(0),
-                    // Load the delegate argument
                     MethodVariableAccess.REFERENCE.loadFrom(1),
-                    // Assign the delegate argument to the delegate field
-                    FieldAccess.forField(
-                            implementationTarget
-                                .getInstrumentedType()
-                                .getDeclaredFields()
-                                .filter(ElementMatchers.named(FN_DELEGATE_FIELD_NAME))
-                                .getOnly())
-                        .write(),
-                    // Return void.
+                    FieldAccess.forField(delegateField).write(),
                     MethodReturn.VOID)
                 .apply(methodVisitor, implementationContext);
         return new ByteCodeAppender.Size(size.getMaximalSize(), instrumentedMethod.getStackSize());

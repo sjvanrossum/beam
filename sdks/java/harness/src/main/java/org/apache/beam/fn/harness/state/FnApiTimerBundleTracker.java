@@ -35,7 +35,6 @@ import org.apache.beam.sdk.util.ByteStringOutputStream;
 import org.apache.beam.sdk.util.UserCodeException;
 import org.apache.beam.sdk.util.construction.Timer;
 import org.apache.beam.vendor.grpc.v1p69p0.com.google.protobuf.ByteString;
-import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ComparisonChain;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.HashBasedTable;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Sets;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Table;
@@ -89,11 +88,12 @@ public class FnApiTimerBundleTracker<K> {
 
     public abstract Table<String, String, Timer<K>> getModifiedTimerIds();
 
-    @SuppressWarnings({"nullness"})
-    static <K> Modifications<K> create() {
-      Comparator<TimeDomain> timeDomainComparator =
-          (td1, td2) -> {
-            // We prioritize processing-time timers,as those tend to be more latency sensitive.
+    private static final Comparator<TimerInfo<?>> TIMER_INFO_COMPARATOR =
+        (o1, o2) -> {
+          TimeDomain td1 = o1.getTimeDomain();
+          TimeDomain td2 = o2.getTimeDomain();
+          if (td1 != td2) {
+            // We prioritize processing-time timers, as those tend to be more latency sensitive.
             if (td1 == TimeDomain.PROCESSING_TIME && td2 == TimeDomain.EVENT_TIME) {
               return -1;
             } else if (td1 == TimeDomain.EVENT_TIME && td2 == TimeDomain.PROCESSING_TIME) {
@@ -101,23 +101,27 @@ public class FnApiTimerBundleTracker<K> {
             } else {
               return td1.compareTo(td2);
             }
-          };
+          }
+          Timer<?> t1 = o1.getTimer();
+          Timer<?> t2 = o2.getTimer();
+          int cmp = Boolean.compare(t2.getClearBit(), t1.getClearBit());
+          if (cmp != 0) {
+            return cmp;
+          }
+          cmp = t1.getFireTimestamp().compareTo(t2.getFireTimestamp());
+          if (cmp != 0) {
+            return cmp;
+          }
+          cmp = t1.getHoldTimestamp().compareTo(t2.getHoldTimestamp());
+          if (cmp != 0) {
+            return cmp;
+          }
+          return t1.getDynamicTimerTag().compareTo(t2.getDynamicTimerTag());
+        };
 
-      // We don't compare userKey or window, as all timers in the TreeSet already have the same
-      // key/window.
-      Comparator<TimerInfo<K>> comparator =
-          (o1, o2) -> {
-            ComparisonChain chain =
-                ComparisonChain.start()
-                    .compare(o1.getTimeDomain(), o2.getTimeDomain(), timeDomainComparator)
-                    .compareTrueFirst(o1.getTimer().getClearBit(), o2.getTimer().getClearBit())
-                    .compare(o1.getTimer().getFireTimestamp(), o2.getTimer().getFireTimestamp())
-                    .compare(o1.getTimer().getHoldTimestamp(), o2.getTimer().getHoldTimestamp())
-                    .compare(
-                        o1.getTimer().getDynamicTimerTag(), o2.getTimer().getDynamicTimerTag());
-            return chain.result();
-          };
-
+    @SuppressWarnings({"nullness", "unchecked", "rawtypes"})
+    static <K> Modifications<K> create() {
+      Comparator<TimerInfo<K>> comparator = (Comparator) TIMER_INFO_COMPARATOR;
       return new AutoValue_FnApiTimerBundleTracker_Modifications<>(
           Sets.newTreeSet(comparator),
           Sets.newTreeSet(comparator),
@@ -181,15 +185,13 @@ public class FnApiTimerBundleTracker<K> {
     modifications.getModifiedTimerIds().put(timerFamilyOrId, timer.getDynamicTimerTag(), timer);
   }
 
-  public Modifications<K> getBundleModifications() {
+  public @Nullable Modifications<K> getBundleModifications() {
+    if (timerModifications.isEmpty()) {
+      return null;
+    }
     ByteString keyString = encodedCurrentKeySupplier.get();
     ByteString windowString = encodedCurrentWindowSupplier.get();
-    @Nullable Modifications<K> modifications = timerModifications.get(keyString, windowString);
-    if (modifications == null) {
-      modifications = Modifications.create();
-      timerModifications.put(keyString, windowString, modifications);
-    }
-    return modifications;
+    return timerModifications.get(keyString, windowString);
   }
 
   public void outputTimers(

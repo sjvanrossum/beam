@@ -33,6 +33,8 @@ import org.apache.beam.sdk.schemas.utils.SelectHelpers.RowSelectorContainer;
 import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.dataflow.qual.Pure;
 
 /** Represents information about how a DoFn extracts schemas. */
@@ -166,12 +168,28 @@ public abstract class DoFnSchemaInformation implements Serializable {
     return toBuilder().setFieldAccessDescriptor(descriptor).build();
   }
 
+  private static int getSingleTopLevelFieldId(
+      Schema inputSchema, FieldAccessDescriptor selectDescriptor) {
+    if (selectDescriptor.getAllFields()) {
+      return inputSchema.getFieldCount() == 1 ? 0 : -1;
+    }
+    if (selectDescriptor.getFieldsAccessed().size() == 1
+        && selectDescriptor.getNestedFieldsAccessed().isEmpty()) {
+      Integer fieldId = Iterables.getOnlyElement(selectDescriptor.getFieldsAccessed()).getFieldId();
+      if (fieldId != null) {
+        return fieldId;
+      }
+    }
+    return -1;
+  }
+
   private static class ConversionFunction<InputT, OutputT>
       implements SerializableFunction<InputT, OutputT> {
     private final SerializableFunction<InputT, Row> toRowFunction;
     private final SerializableFunction<Row, OutputT> fromRowFunction;
     private final boolean unbox;
-    private final RowSelector rowSelector;
+    private final @Nullable RowSelector rowSelector;
+    private final int singleFieldId;
 
     private ConversionFunction(
         Schema inputSchema,
@@ -182,7 +200,19 @@ public abstract class DoFnSchemaInformation implements Serializable {
       this.toRowFunction = toRowFunction;
       this.fromRowFunction = fromRowFunction;
       this.unbox = unbox;
-      this.rowSelector = new RowSelectorContainer(inputSchema, selectDescriptor, true);
+      if (unbox) {
+        this.singleFieldId = getSingleTopLevelFieldId(inputSchema, selectDescriptor);
+        this.rowSelector =
+            this.singleFieldId >= 0
+                ? null
+                : new RowSelectorContainer(inputSchema, selectDescriptor, true);
+      } else if (selectDescriptor.getAllFields()) {
+        this.singleFieldId = -1;
+        this.rowSelector = null;
+      } else {
+        this.singleFieldId = -1;
+        this.rowSelector = new RowSelectorContainer(inputSchema, selectDescriptor, true);
+      }
     }
 
     public static <InputT, OutputT> ConversionFunction of(
@@ -198,7 +228,10 @@ public abstract class DoFnSchemaInformation implements Serializable {
     @Override
     public OutputT apply(InputT input) {
       Row row = toRowFunction.apply(input);
-      Row selected = rowSelector.select(row);
+      if (singleFieldId >= 0) {
+        return fromRowFunction.apply(row != null ? row.getRow(singleFieldId) : null);
+      }
+      Row selected = rowSelector != null ? rowSelector.select(row) : row;
       if (unbox) {
         selected = selected.getRow(0);
       }
@@ -216,7 +249,8 @@ public abstract class DoFnSchemaInformation implements Serializable {
     private final FieldType primitiveType;
     private final TypeDescriptor<?> primitiveOutputType;
     private transient SerializableFunction<InputT, OutputT> conversionFunction;
-    private final RowSelector rowSelector;
+    private final @Nullable RowSelector rowSelector;
+    private final int singleFieldId;
 
     private UnboxingConversionFunction(
         Schema inputSchema,
@@ -227,7 +261,11 @@ public abstract class DoFnSchemaInformation implements Serializable {
       this.toRowFunction = toRowFunction;
       this.primitiveType = selectOutputSchema.getField(0).getType();
       this.primitiveOutputType = primitiveOutputType;
-      this.rowSelector = new RowSelectorContainer(inputSchema, selectDescriptor, true);
+      this.singleFieldId = getSingleTopLevelFieldId(inputSchema, selectDescriptor);
+      this.rowSelector =
+          this.singleFieldId >= 0
+              ? null
+              : new RowSelectorContainer(inputSchema, selectDescriptor, true);
     }
 
     public static <InputT> UnboxingConversionFunction of(
@@ -243,8 +281,9 @@ public abstract class DoFnSchemaInformation implements Serializable {
     @Override
     public OutputT apply(InputT input) {
       Row row = toRowFunction.apply(input);
-      Row selected = rowSelector.select(row);
-      return getConversionFunction().apply(selected.getValue(0));
+      Object value =
+          singleFieldId >= 0 ? row.getValue(singleFieldId) : rowSelector.select(row).getValue(0);
+      return getConversionFunction().apply((InputT) value);
     }
 
     private SerializableFunction<InputT, OutputT> getConversionFunction() {

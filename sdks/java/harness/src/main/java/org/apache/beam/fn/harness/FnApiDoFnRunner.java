@@ -29,7 +29,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
@@ -250,6 +249,7 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
 
   private final DoFnSchemaInformation doFnSchemaInformation;
   private final Map<String, PCollectionView<?>> sideInputMapping;
+  private final Map<String, StateSpec<?>> stateSpecs;
 
   // The member variables below are only valid for the lifetime of certain methods.
   /** Only valid during {@code processElement...} methods, null otherwise. */
@@ -352,6 +352,22 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
       parDoPayload = ParDoPayload.parseFrom(pTransform.getSpec().getPayload());
       doFn = (DoFn) ParDoTranslation.getDoFn(parDoPayload);
       doFnSignature = DoFnSignatures.signatureForDoFn(doFn);
+      if (doFnSignature.stateDeclarations().isEmpty()) {
+        this.stateSpecs = Collections.emptyMap();
+      } else {
+        ImmutableMap.Builder<String, StateSpec<?>> stateSpecsBuilder =
+            ImmutableMap.builderWithExpectedSize(doFnSignature.stateDeclarations().size());
+        for (Map.Entry<String, StateDeclaration> entry :
+            doFnSignature.stateDeclarations().entrySet()) {
+          try {
+            stateSpecsBuilder.put(
+                entry.getKey(), (StateSpec<?>) entry.getValue().field().get(doFn));
+          } catch (IllegalAccessException e) {
+            throw new RuntimeException(e);
+          }
+        }
+        this.stateSpecs = stateSpecsBuilder.build();
+      }
       switch (pTransform.getSpec().getUrn()) {
         case PTransformTranslation.SPLITTABLE_PROCESS_SIZED_ELEMENTS_AND_RESTRICTIONS_URN:
         case PTransformTranslation.PAR_DO_TRANSFORM_URN:
@@ -565,6 +581,17 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
     }
   }
 
+  private State bindState(String stateId, boolean alwaysFetched) {
+    StateSpec<?> spec = stateSpecs.get(stateId);
+    checkNotNull(spec, "No state declaration found for %s", stateId);
+    State state = spec.bind(stateId, stateAccessor);
+    if (alwaysFetched) {
+      return (State) ((ReadableState) state).readLater();
+    } else {
+      return state;
+    }
+  }
+
   @Override
   public Object getCurrentKey() {
     if (currentKey != null) {
@@ -594,36 +621,38 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
 
   private void processElementForParDo(WindowedValue<InputT> elem) {
     currentElement = elem;
-    causedByDrain = currentElement.causedByDrain();
     try {
       doFnInvoker.invokeProcessElement(processContext);
     } finally {
       currentElement = null;
-      causedByDrain = null;
     }
   }
 
   private void processElementForWindowObservingParDo(WindowedValue<InputT> elem) {
     currentElement = elem;
-    causedByDrain = currentElement.causedByDrain();
     try {
-      Iterator<BoundedWindow> windowIterator =
-          (Iterator<BoundedWindow>) elem.getWindows().iterator();
-      while (windowIterator.hasNext()) {
-        currentWindow = windowIterator.next();
-        doFnInvoker.invokeProcessElement(processContext);
+      Collection<? extends BoundedWindow> windows = elem.getWindows();
+      if (windows instanceof List) {
+        List<? extends BoundedWindow> windowList = (List<? extends BoundedWindow>) windows;
+        for (int i = 0, size = windowList.size(); i < size; i++) {
+          currentWindow = windowList.get(i);
+          doFnInvoker.invokeProcessElement(processContext);
+        }
+      } else {
+        for (BoundedWindow window : windows) {
+          currentWindow = window;
+          doFnInvoker.invokeProcessElement(processContext);
+        }
       }
     } finally {
       currentElement = null;
       currentWindow = null;
-      causedByDrain = null;
     }
   }
 
   private void processElementForWindowObservingSizedElementAndRestriction(
       WindowedValue<KV<KV<InputT, KV<RestrictionT, WatermarkEstimatorStateT>>, Double>> elem) {
     currentElement = elem.withValue(elem.getValue().getKey().getKey());
-    causedByDrain = elem.causedByDrain();
     windowCurrentIndex = -1;
     windowStopIndex = currentElement.getWindows().size();
     currentWindows = ImmutableList.copyOf(currentElement.getWindows());
@@ -635,7 +664,6 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
           windowCurrentIndex = -1;
           windowStopIndex = 0;
           currentElement = null;
-          causedByDrain = null;
           currentWindows = null;
           currentRestriction = null;
           currentWatermarkEstimatorState = null;
@@ -1181,17 +1209,39 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
       causedByDrain = Preconditions.checkNotNull(timer.causedByDrain());
 
       // add drain
-      Iterator<BoundedWindow> windowIterator =
-          (Iterator<BoundedWindow>) timer.getWindows().iterator();
-      while (windowIterator.hasNext()) {
-        currentWindow = windowIterator.next();
-        Modifications bundleModifications = timerBundleTracker.getBundleModifications();
-        Table<String, String, Timer<K>> modifiedTimerIds =
-            bundleModifications.getModifiedTimerIds();
+      Collection<? extends BoundedWindow> windows = timer.getWindows();
+      if (windows instanceof List) {
+        List<? extends BoundedWindow> windowList = (List<? extends BoundedWindow>) windows;
+        for (int i = 0, size = windowList.size(); i < size; i++) {
+          currentWindow = windowList.get(i);
+          processTimerForCurrentWindow(timerIdOrTimerFamilyId, timeDomain, timer);
+        }
+      } else {
+        for (BoundedWindow window : windows) {
+          currentWindow = window;
+          processTimerForCurrentWindow(timerIdOrTimerFamilyId, timeDomain, timer);
+        }
+      }
+    } finally {
+      currentKey = null;
+      currentTimer = null;
+      currentTimeDomain = null;
+      currentWindow = null;
+      causedByDrain = null;
+    }
+  }
+
+  private <K> void processTimerForCurrentWindow(
+      String timerIdOrTimerFamilyId, TimeDomain timeDomain, Timer<K> timer) {
+    @Nullable Modifications<K> bundleModifications = timerBundleTracker.getBundleModifications();
+    @Nullable Table<String, String, Timer<K>> modifiedTimerIds = null;
+    if (bundleModifications != null) {
+      modifiedTimerIds = bundleModifications.getModifiedTimerIds();
+      NavigableSet<TimerInfo<K>> modifiedTimersOrdered =
+          bundleModifications.getModifiedTimersOrdered(timeDomain);
+      if (!modifiedTimersOrdered.isEmpty()) {
         NavigableSet<TimerInfo<K>> earlierTimers =
-            bundleModifications
-                .getModifiedTimersOrdered(timeDomain)
-                .headSet(TimerInfo.of(timer, "", timeDomain), true);
+            modifiedTimersOrdered.headSet(TimerInfo.of(timer, "", timeDomain), true);
         while (!earlierTimers.isEmpty()) {
           TimerInfo<K> insertedTimer = earlierTimers.pollFirst();
           if (timerModified(
@@ -1208,11 +1258,10 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
                   ? ""
                   : insertedTimer.getTimerFamilyOrId();
 
-          // If this timer was created previously in the bundle as an overwrite of a previous timer,
-          // we must make sure
-          // to clear the old timer. Since we are firing the timer inline, the runner doesn't know
-          // that the old timer
-          // was overwritten, and will otherwise fire it - causing a spurious timer fire.
+          // If this timer was created previously in the bundle as an overwrite of a previous
+          // timer, we must make sure to clear the old timer. Since we are firing the timer
+          // inline, the runner doesn't know that the old timer was overwritten, and will
+          // otherwise fire it - causing a spurious timer fire.
           modifiedTimerIds.put(
               insertedTimer.getTimerFamilyOrId(),
               insertedTimer.getTimer().getDynamicTimerTag(),
@@ -1221,28 +1270,22 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
                   insertedTimer.getTimer().getDynamicTimerTag(),
                   insertedTimer.getTimer().getWindows()));
           // It's important to call processTimer after inserting the above deletion, otherwise the
-          // above line
-          // would overwrite any looping timer with a deletion.
+          // above line would overwrite any looping timer with a deletion.
           processTimerDirect(
               timerFamily, timerId, insertedTimer.getTimeDomain(), insertedTimer.getTimer());
         }
-
-        if (!timerModified(modifiedTimerIds, timerIdOrTimerFamilyId, timer)) {
-          // The timerIdOrTimerFamilyId contains either a timerId from timer declaration or
-          // timerFamilyId
-          // from timer family declaration.
-          boolean isFamily = timerIdOrTimerFamilyId.startsWith(TimerFamilyDeclaration.PREFIX);
-          String timerId = isFamily ? "" : timerIdOrTimerFamilyId;
-          String timerFamilyId = isFamily ? timerIdOrTimerFamilyId : "";
-          processTimerDirect(timerFamilyId, timerId, timeDomain, timer);
-        }
       }
-    } finally {
-      currentKey = null;
-      currentTimer = null;
-      currentTimeDomain = null;
-      currentWindow = null;
-      causedByDrain = null;
+    }
+
+    if (modifiedTimerIds == null
+        || !timerModified(modifiedTimerIds, timerIdOrTimerFamilyId, timer)) {
+      // The timerIdOrTimerFamilyId contains either a timerId from timer declaration or
+      // timerFamilyId
+      // from timer family declaration.
+      boolean isFamily = timerIdOrTimerFamilyId.startsWith(TimerFamilyDeclaration.PREFIX);
+      String timerId = isFamily ? "" : timerIdOrTimerFamilyId;
+      String timerFamilyId = isFamily ? timerIdOrTimerFamilyId : "";
+      processTimerDirect(timerFamilyId, timerId, timeDomain, timer);
     }
   }
 
@@ -1265,11 +1308,18 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
       currentKey = timer.getUserKey();
       currentTimer = timer;
       causedByDrain = timer.causedByDrain();
-      Iterator<BoundedWindow> windowIterator =
-          (Iterator<BoundedWindow>) timer.getWindows().iterator();
-      while (windowIterator.hasNext()) {
-        currentWindow = windowIterator.next();
-        doFnInvoker.invokeOnWindowExpiration(onWindowExpirationContext);
+      Collection<? extends BoundedWindow> windows = timer.getWindows();
+      if (windows instanceof List) {
+        List<? extends BoundedWindow> windowList = (List<? extends BoundedWindow>) windows;
+        for (int i = 0, size = windowList.size(); i < size; i++) {
+          currentWindow = windowList.get(i);
+          doFnInvoker.invokeOnWindowExpiration(onWindowExpirationContext);
+        }
+      } else {
+        for (BoundedWindow window : windows) {
+          currentWindow = window;
+          doFnInvoker.invokeOnWindowExpiration(onWindowExpirationContext);
+        }
       }
     } finally {
       currentKey = null;
@@ -1518,7 +1568,7 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
           scheduledTime,
           outputTimestamp,
           paneInfo,
-          causedByDrain);
+          causedByDrain != null ? causedByDrain : currentElement.causedByDrain());
     }
   }
 
@@ -1544,9 +1594,7 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
       this.elementTimestampOrTimerFireTimestamp = elementTimestampOrTimerFireTimestamp;
       this.boundedWindow = boundedWindow;
       this.paneInfo = paneInfo;
-      this.timeDomain =
-          translateTimeDomain(
-              parDoPayload.getTimerFamilySpecsMap().get(timerFamilyId).getTimeDomain());
+      this.timeDomain = timerFamilyInfos.get(timerFamilyId).getKey();
     }
 
     @Override
@@ -1814,20 +1862,7 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
 
     @Override
     public State state(String stateId, boolean alwaysFetched) {
-      StateDeclaration stateDeclaration = doFnSignature.stateDeclarations().get(stateId);
-      checkNotNull(stateDeclaration, "No state declaration found for %s", stateId);
-      StateSpec<?> spec;
-      try {
-        spec = (StateSpec<?>) stateDeclaration.field().get(doFn);
-      } catch (IllegalAccessException e) {
-        throw new RuntimeException(e);
-      }
-      State state = spec.bind(stateId, stateAccessor);
-      if (alwaysFetched) {
-        return (State) ((ReadableState) state).readLater();
-      } else {
-        return state;
-      }
+      return bindState(stateId, alwaysFetched);
     }
 
     @Override
@@ -1840,8 +1875,7 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
       // For the initial timestamps we pass in the current elements timestamp for the hold timestamp
       // and the current element's timestamp which will be used for the fire timestamp if this
       // timer is in the EVENT time domain.
-      TimeDomain timeDomain =
-          translateTimeDomain(parDoPayload.getTimerFamilySpecsMap().get(timerId).getTimeDomain());
+      TimeDomain timeDomain = timerFamilyInfos.get(timerId).getKey();
       return new FnApiTimer(
           timerId,
           ((KV) currentElement.getValue()).getKey(),
@@ -1953,16 +1987,6 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
     @Override
     public <T> void outputWindowedValue(TupleTag<T> tag, WindowedValue<T> windowedValue) {
       outputTo((FnDataReceiver) localNameToConsumer.get(tag.getId()), windowedValue);
-    }
-
-    @Override
-    public CausedByDrain causedByDrain() {
-      return currentElement.causedByDrain();
-    }
-
-    @Override
-    public CausedByDrain causedByDrain(DoFn<InputT, OutputT> doFn) {
-      return currentElement.causedByDrain();
     }
   }
 
@@ -2317,12 +2341,36 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
 
       @Override
       public void output(OutputT output) {
-        OutputReceiver.super.output(output);
+        checkOnWindowExpirationTimestamp(currentTimer.getHoldTimestamp());
+        outputTo(
+            mainOutputConsumer,
+            WindowedValues.of(
+                output,
+                currentTimer.getHoldTimestamp(),
+                currentWindow,
+                currentTimer.getPaneInfo(),
+                null,
+                null,
+                currentTimer.causedByDrain(),
+                null,
+                ValueKind.INSERT));
       }
 
       @Override
       public void outputWithTimestamp(OutputT output, Instant timestamp) {
-        OutputReceiver.super.outputWithTimestamp(output, timestamp);
+        checkOnWindowExpirationTimestamp(timestamp);
+        outputTo(
+            mainOutputConsumer,
+            WindowedValues.of(
+                output,
+                timestamp,
+                currentWindow,
+                currentTimer.getPaneInfo(),
+                null,
+                null,
+                currentTimer.causedByDrain(),
+                null,
+                ValueKind.INSERT));
       }
 
       @Override
@@ -2331,7 +2379,19 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
           Instant timestamp,
           Collection<? extends BoundedWindow> windows,
           PaneInfo paneInfo) {
-        OutputReceiver.super.outputWindowedValue(output, timestamp, windows, paneInfo);
+        checkOnWindowExpirationTimestamp(timestamp);
+        outputTo(
+            mainOutputConsumer,
+            WindowedValues.of(
+                output,
+                timestamp,
+                windows,
+                paneInfo,
+                null,
+                null,
+                currentTimer.causedByDrain(),
+                null,
+                ValueKind.INSERT));
       }
 
       @Override
@@ -2602,20 +2662,7 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
 
     @Override
     public State state(String stateId, boolean alwaysFetched) {
-      StateDeclaration stateDeclaration = doFnSignature.stateDeclarations().get(stateId);
-      checkNotNull(stateDeclaration, "No state declaration found for %s", stateId);
-      StateSpec<?> spec;
-      try {
-        spec = (StateSpec<?>) stateDeclaration.field().get(doFn);
-      } catch (IllegalAccessException e) {
-        throw new RuntimeException(e);
-      }
-      State state = spec.bind(stateId, stateAccessor);
-      if (alwaysFetched) {
-        return (State) ((ReadableState) state).readLater();
-      } else {
-        return state;
-      }
+      return bindState(stateId, alwaysFetched);
     }
 
     @Override
@@ -2675,12 +2722,36 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
 
       @Override
       public void output(OutputT output) {
-        OutputReceiver.super.output(output);
+        checkTimerTimestamp(currentTimer.getHoldTimestamp());
+        outputTo(
+            mainOutputConsumer,
+            WindowedValues.of(
+                output,
+                currentTimer.getHoldTimestamp(),
+                currentWindow,
+                currentTimer.getPaneInfo(),
+                null,
+                null,
+                causedByDrain,
+                null,
+                ValueKind.INSERT));
       }
 
       @Override
       public void outputWithTimestamp(OutputT output, Instant timestamp) {
-        OutputReceiver.super.outputWithTimestamp(output, timestamp);
+        checkTimerTimestamp(timestamp);
+        outputTo(
+            mainOutputConsumer,
+            WindowedValues.of(
+                output,
+                timestamp,
+                currentWindow,
+                currentTimer.getPaneInfo(),
+                null,
+                null,
+                causedByDrain,
+                null,
+                ValueKind.INSERT));
       }
 
       @Override
@@ -2689,7 +2760,19 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
           Instant timestamp,
           Collection<? extends BoundedWindow> windows,
           PaneInfo paneInfo) {
-        OutputReceiver.super.outputWindowedValue(output, timestamp, windows, paneInfo);
+        checkTimerTimestamp(timestamp);
+        outputTo(
+            mainOutputConsumer,
+            WindowedValues.of(
+                output,
+                timestamp,
+                windows,
+                paneInfo,
+                null,
+                null,
+                causedByDrain,
+                null,
+                ValueKind.INSERT));
       }
 
       @Override
@@ -2953,26 +3036,12 @@ public class FnApiDoFnRunner<InputT, RestrictionT, PositionT, WatermarkEstimator
 
     @Override
     public State state(String stateId, boolean alwaysFetched) {
-      StateDeclaration stateDeclaration = doFnSignature.stateDeclarations().get(stateId);
-      checkNotNull(stateDeclaration, "No state declaration found for %s", stateId);
-      StateSpec<?> spec;
-      try {
-        spec = (StateSpec<?>) stateDeclaration.field().get(doFn);
-      } catch (IllegalAccessException e) {
-        throw new RuntimeException(e);
-      }
-      State state = spec.bind(stateId, stateAccessor);
-      if (alwaysFetched) {
-        return (State) ((ReadableState) state).readLater();
-      } else {
-        return state;
-      }
+      return bindState(stateId, alwaysFetched);
     }
 
     @Override
     public org.apache.beam.sdk.state.Timer timer(String timerId) {
-      TimeDomain timeDomain =
-          translateTimeDomain(parDoPayload.getTimerFamilySpecsMap().get(timerId).getTimeDomain());
+      TimeDomain timeDomain = timerFamilyInfos.get(timerId).getKey();
       return new FnApiTimer(
           timerId,
           currentTimer.getUserKey(),

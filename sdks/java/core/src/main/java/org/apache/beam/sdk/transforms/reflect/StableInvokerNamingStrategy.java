@@ -30,7 +30,7 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * deterministic and readable. This is correct to use only when a class is created at most once.
  */
 @AutoValue
-abstract class StableInvokerNamingStrategy extends NamingStrategy.AbstractBase {
+public abstract class StableInvokerNamingStrategy extends NamingStrategy.AbstractBase {
 
   public abstract Class<? extends DoFn<?, ?>> getFnClass();
 

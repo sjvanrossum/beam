@@ -632,6 +632,37 @@ public class ByteBuddyUtils {
     return stackManipulation;
   }
 
+  public static boolean hasIdentityElementConversion(TypeDescriptor<?> typeDescriptor) {
+    if (typeDescriptor.hasUnresolvedParameters()) {
+      return true;
+    }
+    Class<?> rawType = typeDescriptor.getRawType();
+    if (typeDescriptor.isArray()) {
+      return byte[].class.equals(rawType);
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(Map.class))) {
+      return Map.class.equals(rawType)
+          && hasIdentityElementConversion(ReflectUtils.getMapType(typeDescriptor, 0))
+          && hasIdentityElementConversion(ReflectUtils.getMapType(typeDescriptor, 1));
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(ReadableInstant.class))
+        || typeDescriptor.isSubtypeOf(TypeDescriptor.of(ReadablePartial.class))
+        || inferredLogicalTypeFor(rawType) != null
+        || typeDescriptor.isSubtypeOf(TypeDescriptor.of(ByteBuffer.class))
+        || rawType.isPrimitive()
+        || rawType.isEnum()) {
+      return false;
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(CharSequence.class))) {
+      return String.class.equals(rawType);
+    } else if (typeDescriptor.isSubtypeOf(TypeDescriptor.of(Iterable.class))) {
+      return (List.class.equals(rawType)
+              || Collection.class.equals(rawType)
+              || Iterable.class.equals(rawType))
+          && hasIdentityElementConversion(
+              Preconditions.checkArgumentNotNull(
+                  ReflectUtils.getIterableComponentType(typeDescriptor)));
+    }
+    return true;
+  }
+
   public static <K1, V1, K2, V2> TransformingMap<K1, V1, K2, V2> getTransformingMap(
       Map<K1, V1> sourceMap, Function<K1, K2> keyFunction, Function<V1, V2> valueFunction) {
     return new TransformingMap<>(sourceMap, keyFunction, valueFunction);

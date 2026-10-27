@@ -451,31 +451,39 @@ public class FnApiStateAccessor<K> implements SideInputReader, StateBinder {
                 new ValueState<T>() {
                   private final BagUserState<T> impl =
                       createBagUserState(createBagUserStateKey(id), coder);
+                  private boolean valueLoaded;
+                  private @Nullable T cachedValue;
 
                   @Override
                   public void clear() {
                     impl.clear();
+                    cachedValue = null;
+                    valueLoaded = true;
                   }
 
                   @Override
                   public void write(T input) {
                     impl.clear();
                     impl.append(input);
+                    cachedValue = input;
+                    valueLoaded = true;
                   }
 
                   @Override
                   public T read() {
-                    Iterator<T> value = impl.get().iterator();
-                    if (value.hasNext()) {
-                      return value.next();
-                    } else {
-                      return null;
+                    if (!valueLoaded) {
+                      Iterator<T> value = impl.get().iterator();
+                      cachedValue = value.hasNext() ? value.next() : null;
+                      valueLoaded = true;
                     }
+                    return cachedValue;
                   }
 
                   @Override
                   public ValueState<T> readLater() {
-                    impl.get().prefetch();
+                    if (!valueLoaded) {
+                      impl.get().prefetch();
+                    }
                     return this;
                   }
                 });

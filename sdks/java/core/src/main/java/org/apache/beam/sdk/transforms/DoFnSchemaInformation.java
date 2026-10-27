@@ -23,17 +23,21 @@ import java.util.Collections;
 import java.util.List;
 import org.apache.beam.sdk.annotations.Internal;
 import org.apache.beam.sdk.schemas.FieldAccessDescriptor;
+import org.apache.beam.sdk.schemas.JavaFieldSchema.JavaFieldTypeSupplier;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.schemas.SchemaCoder;
+import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils;
 import org.apache.beam.sdk.schemas.utils.ByteBuddyUtils.DefaultTypeConversionsFactory;
 import org.apache.beam.sdk.schemas.utils.ConvertHelpers;
 import org.apache.beam.sdk.schemas.utils.RowSelector;
 import org.apache.beam.sdk.schemas.utils.SelectHelpers.RowSelectorContainer;
+import org.apache.beam.sdk.schemas.utils.StaticSchemaInference;
 import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.collect.Iterables;
+import org.apache.beam.vendor.guava.v32_1_2_jre.com.google.common.primitives.Primitives;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.dataflow.qual.Pure;
 
@@ -251,6 +255,7 @@ public abstract class DoFnSchemaInformation implements Serializable {
     private transient SerializableFunction<InputT, OutputT> conversionFunction;
     private final @Nullable RowSelector rowSelector;
     private final int singleFieldId;
+    private final boolean hasIdentityConversion;
 
     private UnboxingConversionFunction(
         Schema inputSchema,
@@ -266,6 +271,22 @@ public abstract class DoFnSchemaInformation implements Serializable {
           this.singleFieldId >= 0
               ? null
               : new RowSelectorContainer(inputSchema, selectDescriptor, true);
+      boolean identityConversion = false;
+      try {
+        TypeDescriptor<?> boxedOutputType =
+            primitiveOutputType.getRawType().isPrimitive()
+                ? TypeDescriptor.of(Primitives.wrap(primitiveOutputType.getRawType()))
+                : primitiveOutputType;
+        FieldType expectedFieldType =
+            StaticSchemaInference.fieldFromType(
+                primitiveOutputType, JavaFieldTypeSupplier.INSTANCE);
+        identityConversion =
+            expectedFieldType.equals(this.primitiveType)
+                && ByteBuddyUtils.hasIdentityElementConversion(boxedOutputType);
+      } catch (RuntimeException ignored) {
+        // Defer validation errors to getConversionFunction().
+      }
+      this.hasIdentityConversion = identityConversion;
     }
 
     public static <InputT> UnboxingConversionFunction of(
@@ -283,6 +304,9 @@ public abstract class DoFnSchemaInformation implements Serializable {
       Row row = toRowFunction.apply(input);
       Object value =
           singleFieldId >= 0 ? row.getValue(singleFieldId) : rowSelector.select(row).getValue(0);
+      if (hasIdentityConversion) {
+        return (OutputT) value;
+      }
       return getConversionFunction().apply((InputT) value);
     }
 
